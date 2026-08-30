@@ -4,7 +4,9 @@ import (
 	"log"
 	"net/http"
 
+	"github.com/caiohperlin/perlinadv/internal/cases"
 	"github.com/caiohperlin/perlinadv/internal/config"
+	"github.com/caiohperlin/perlinadv/internal/response"
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 )
@@ -37,15 +39,19 @@ func New(cfg config.Config) *Application {
 }
 
 func (app *Application) mountMiddleware() {
-	r := app.router
-	r.Use(middleware.Logger)
-	r.Use(middleware.Recoverer)
+	app.router.Use(middleware.Logger)
+	app.router.Use(middleware.Recoverer)
 }
 
 func (app *Application) mountRoutes() {
-	r := app.router
-	r.Get("/health", func(w http.ResponseWriter, r *http.Request) {
-		w.Write([]byte("hallo"))
+	app.router.Get("/health", func(w http.ResponseWriter, r *http.Request) {
+		response.JSON(w, http.StatusOK, map[string]string{"message": "ok"})
+	})
+
+	casesService := cases.NewService()
+	casesHandler := cases.NewHandler(casesService)
+	app.router.Route("/cases", func(r chi.Router) {
+		r.Get("/", casesHandler.FindCases)
 	})
 }
 
