@@ -6,7 +6,7 @@ type service struct {
 	// repo
 }
 
-func (s *service) FindCases(ctx context.Context) error {
+func (s *service) ListCases(ctx context.Context) error {
 	return nil
 }
 

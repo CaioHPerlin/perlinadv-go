@@ -48,10 +48,9 @@ func (app *Application) mountRoutes() {
 		response.JSON(w, http.StatusOK, map[string]string{"message": "ok"})
 	})
 
-	casesService := cases.NewService()
-	casesHandler := cases.NewHandler(casesService)
+	casesHandler := cases.NewHandler(cases.NewService())
 	app.router.Route("/cases", func(r chi.Router) {
-		r.Get("/", casesHandler.FindCases)
+		r.Get("/", casesHandler.ListCases)
 	})
 }
 

@@ -17,8 +17,8 @@ func NewHandler(service *service) *handler {
 	}
 }
 
-func (h *handler) FindCases(w http.ResponseWriter, r *http.Request) {
-	err := h.service.FindCases(r.Context())
+func (h *handler) ListCases(w http.ResponseWriter, r *http.Request) {
+	err := h.service.ListCases(r.Context())
 	if err != nil {
 		log.Println(err)
 		http.Error(w, err.Error(), http.StatusInternalServerError)
