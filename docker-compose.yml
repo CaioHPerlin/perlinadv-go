@@ -1,0 +1,10 @@
+services:
+  db:
+    image: postgres:18
+    restart: always
+    environment:
+      - POSTGRES_PASSWORD=admin
+      - POSTGRES_USER=admin
+      - POSTGRES_DB=perlinadv
+    ports:
+      - "5432:5432"
