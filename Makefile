@@ -2,7 +2,6 @@
 
 COMPOSE ?= docker compose
 GOOSE ?= goose
-SQLC ?= sqlc
 
 ifneq (,$(wildcard .env))
 include .env
@@ -14,15 +13,15 @@ GOOSE_MIGRATION_DIR := $(CURDIR)/migrations
 
 export GOOSE_DRIVER GOOSE_DBSTRING GOOSE_MIGRATION_DIR
 
-.PHONY: help db-up db-down db-logs generate migrate-status migrate-up migrate-down migrate-new run build test vet check
+.PHONY: help db-up db-down db-logs migrate-status migrate-up migrate-down migrate-new generate run worker build test vet check
 
 help:
 	@echo "make db-up                         			starts PostgreSQL container"
-	@echo "make generate                      			runs sqlc generate"
 	@echo "make migrate-up                        	applies migrations"
 	@echo "make migrate-down                  			reverts the last migration"
 	@echo "make migrate-new name=migration_name    	creates a new migration"
 	@echo "make run                           			starts the API"
+	@echo "make generate                      			regenerates typed SQL with sqlc"
 	@echo "make check                         			runs vet and tests"
 
 db-up:
@@ -34,16 +33,13 @@ db-down:
 db-logs:
 	$(COMPOSE) logs -f db
 
-generate:
-	$(SQLC) generate
-
 migrate-status:
 	@test -n "$(DATABASE_URL)" || (echo "DATABASE_URL is required"; exit 1)
 	$(GOOSE) status
 
 migrate-up:
 	@test -n "$(DATABASE_URL)" || (echo "DATABASE_URL is required"; exit 1)
-	$(GOOSE) up
+	go run ./cmd/migrate
 
 migrate-down:
 	@test -n "$(DATABASE_URL)" || (echo "DATABASE_URL is required"; exit 1)
@@ -53,12 +49,20 @@ migrate-new:
 	@test -n "$(name)" || (echo "usage: make migrate-new name=migration_name"; exit 1)
 	$(GOOSE) -dir "$(GOOSE_MIGRATION_DIR)" create "$(name)" sql
 
+generate:
+	sqlc generate
+
 run:
 	go run ./cmd/api
+
+worker:
+	go run ./cmd/worker
 
 build:
 	mkdir -p bin
 	go build -o bin/api ./cmd/api
+	go build -o bin/worker ./cmd/worker
+	go build -o bin/admin ./cmd/admin
 
 test:
 	go test ./...

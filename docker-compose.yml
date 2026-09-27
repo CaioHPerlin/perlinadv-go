@@ -1,10 +1,65 @@
 services:
   db:
     image: postgres:18
-    restart: always
     environment:
-      - POSTGRES_PASSWORD=admin
-      - POSTGRES_USER=admin
-      - POSTGRES_DB=perlinadv
+      POSTGRES_DB: perlinadv
+      POSTGRES_USER: admin
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-admin}
     ports:
-      - "5432:5432"
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U admin -d perlinadv"]
+      interval: 5s
+      retries: 20
+  migrate:
+    build: .
+    command: ["/app/migrate"]
+    environment:
+      DATABASE_URL: postgres://admin:${POSTGRES_PASSWORD:-admin}@db:5432/perlinadv
+    depends_on:
+      db:
+        condition: service_healthy
+  api:
+    build: .
+    command: ["/app/api"]
+    environment:
+      DATABASE_URL: postgres://admin:${POSTGRES_PASSWORD:-admin}@db:5432/perlinadv
+      ADDRESS: :3000
+      SMTP_ADDR: mailpit:1025
+      SMTP_FROM: ${SMTP_FROM:-no-reply@perlinadv.local}
+      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
+      GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET:-}
+      GOOGLE_REDIRECT_URI: ${GOOGLE_REDIRECT_URI:-}
+      GOOGLE_TOKEN_KEY: ${GOOGLE_TOKEN_KEY:-}
+    ports:
+      - "127.0.0.1:3000:3000"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      mailpit:
+        condition: service_started
+  worker:
+    build: .
+    command: ["/app/worker"]
+    environment:
+      DATABASE_URL: postgres://admin:${POSTGRES_PASSWORD:-admin}@db:5432/perlinadv
+      DJEN_BASE_URL: ${DJEN_BASE_URL:-https://comunicaapi.pje.jus.br/api/v1}
+      CLOUDFLARE_ACCOUNT_ID: ${CLOUDFLARE_ACCOUNT_ID:-}
+      CLOUDFLARE_API_TOKEN: ${CLOUDFLARE_API_TOKEN:-}
+      CLOUDFLARE_MODEL: ${CLOUDFLARE_MODEL:-@cf/meta/llama-3.3-70b-instruct-fp8-fast}
+      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
+      GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET:-}
+      GOOGLE_REDIRECT_URI: ${GOOGLE_REDIRECT_URI:-}
+      GOOGLE_TOKEN_KEY: ${GOOGLE_TOKEN_KEY:-}
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+  mailpit:
+    image: axllent/mailpit:latest
+    ports:
+      - "127.0.0.1:8025:8025"
+
+volumes:
+  postgres_data:
