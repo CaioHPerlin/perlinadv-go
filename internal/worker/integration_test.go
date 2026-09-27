@@ -57,13 +57,14 @@ func TestExternalFailurePreservesPublicationIntegration(t *testing.T) {
 		}
 	}
 	var status string
+	var llmAssisted bool
 	var count int
-	if err = db.QueryRow(`SELECT analysis_status FROM user_publications WHERE user_id=$1 AND publication_id=$2`, userID, publicationID).Scan(&status); err != nil {
+	if err = db.QueryRow(`SELECT analysis_status,llm_assisted FROM user_publications WHERE user_id=$1 AND publication_id=$2`, userID, publicationID).Scan(&status, &llmAssisted); err != nil {
 		t.Fatal(err)
 	}
 	_ = db.QueryRow(`SELECT count(*) FROM publications WHERE id=$1`, publicationID).Scan(&count)
-	if status != "FAILED" || count != 1 {
-		t.Fatalf("analysis=%s publication_count=%d", status, count)
+	if status != "FAILED" || count != 1 || !llmAssisted {
+		t.Fatalf("analysis=%s publication_count=%d llm_assisted=%v", status, count, llmAssisted)
 	}
 }
 
@@ -84,7 +85,7 @@ func TestEditionToCalculatedSuggestionIntegration(t *testing.T) {
 	locality := "TEST" + suffix
 	sourceID := fmt.Sprint(time.Now().UnixNano() % 1000000000)
 	var userID, caseID string
-	err = db.QueryRow(`INSERT INTO users(name,email,password_hash,oab_number,oab_uf) VALUES('Test',$1,'unused',$2,'MS') RETURNING id::text`, email, oab).Scan(&userID)
+	err = db.QueryRow(`INSERT INTO users(name,email,password_hash,oab_number,oab_uf,llm_consent) VALUES('Test',$1,'unused',$2,'MS',TRUE) RETURNING id::text`, email, oab).Scan(&userID)
 	if err != nil {
 		t.Fatal(err)
 	}

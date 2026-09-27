@@ -29,6 +29,7 @@ type Worker struct {
 	DB      *sql.DB
 	HTTP    *http.Client
 	BaseURL string
+	Mode    string
 	LLM     extract.Provider
 }
 
@@ -52,7 +53,15 @@ func New() (Worker, error) {
 	if base == "" {
 		base = "https://comunicaapi.pje.jus.br/api/v1"
 	}
-	return Worker{DB: db, HTTP: &http.Client{Timeout: 60 * time.Second}, BaseURL: strings.TrimRight(base, "/"), LLM: extract.CloudflareFromEnv()}, nil
+	mode := strings.ToLower(strings.TrimSpace(os.Getenv("DJEN_COLLECTION_MODE")))
+	if mode == "" {
+		mode = "oab"
+	}
+	if mode != "oab" && mode != "caderno" {
+		db.Close()
+		return Worker{}, errors.New("DJEN_COLLECTION_MODE must be oab or caderno")
+	}
+	return Worker{DB: db, HTTP: &http.Client{Timeout: 60 * time.Second}, BaseURL: strings.TrimRight(base, "/"), Mode: mode, LLM: extract.CloudflareFromEnv()}, nil
 }
 func (w Worker) Close() { _ = w.DB.Close() }
 func (w Worker) Replay(ctx context.Context, tribunal, date string) error {
@@ -75,29 +84,37 @@ func (w Worker) RunOnce(ctx context.Context) error {
 	defer w.DB.ExecContext(context.Background(), `SELECT pg_advisory_unlock(7242026)`)
 	zone, _ := time.LoadLocation("America/Campo_Grande")
 	today := time.Now().In(zone)
-	tribunals := []string{"TJMS", "TRF3"}
-	var labor bool
-	_ = w.DB.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM users WHERE active AND labor_practice AND role='LAWYER')`).Scan(&labor)
-	if labor {
-		tribunals = append(tribunals, "TRT24")
-	}
-	rateLimited := false
-	for _, tribunal := range tribunals {
-		for _, date := range previousBusinessDays(today, 7) {
-			if err := w.ingestEdition(ctx, tribunal, date); err != nil {
-				if errors.Is(err, ErrNoEdition) {
-					continue
-				}
-				log.Printf("DJEN %s %s: %v", tribunal, date, err)
-				_, _ = w.DB.ExecContext(ctx, `INSERT INTO djen_editions(tribunal,edition_on,source_version,status,error) VALUES($1,$2,'error','FAILED',$3) ON CONFLICT(tribunal,edition_on,medium,source_version) DO UPDATE SET status='FAILED',error=excluded.error`, tribunal, date, err.Error())
-				if errors.Is(err, ErrRateLimited) {
-					rateLimited = true
-					break
+	var collectionErr error
+	if w.Mode != "caderno" {
+		collectionErr = w.pollLawyers(ctx, today)
+		if collectionErr != nil {
+			log.Printf("DJEN OAB poll: %v", collectionErr)
+		}
+	} else {
+		tribunals := []string{"TJMS", "TRF3"}
+		var labor bool
+		_ = w.DB.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM users WHERE active AND labor_practice AND role='LAWYER')`).Scan(&labor)
+		if labor {
+			tribunals = append(tribunals, "TRT24")
+		}
+		rateLimited := false
+		for _, tribunal := range tribunals {
+			for _, date := range previousBusinessDays(today, 7) {
+				if err := w.ingestEdition(ctx, tribunal, date); err != nil {
+					if errors.Is(err, ErrNoEdition) {
+						continue
+					}
+					log.Printf("DJEN %s %s: %v", tribunal, date, err)
+					_, _ = w.DB.ExecContext(ctx, `INSERT INTO djen_editions(tribunal,edition_on,source_version,status,error) VALUES($1,$2,'error','FAILED',$3) ON CONFLICT(tribunal,edition_on,medium,source_version) DO UPDATE SET status='FAILED',error=excluded.error`, tribunal, date, err.Error())
+					if errors.Is(err, ErrRateLimited) {
+						rateLimited = true
+						break
+					}
 				}
 			}
-		}
-		if rateLimited {
-			break
+			if rateLimited {
+				break
+			}
 		}
 	}
 	if err := w.analyze(ctx); err != nil {
@@ -108,7 +125,7 @@ func (w Worker) RunOnce(ctx context.Context) error {
 	}
 	_, _ = w.DB.ExecContext(ctx, `DELETE FROM recent_publication_matches WHERE expires_at<now()`)
 	_, _ = w.DB.ExecContext(ctx, `DELETE FROM publications p WHERE NOT EXISTS(SELECT 1 FROM user_publications up WHERE up.publication_id=p.id) AND NOT EXISTS(SELECT 1 FROM recent_publication_matches m WHERE m.source_id=p.source_id)`)
-	return nil
+	return collectionErr
 }
 func previousBusinessDays(today time.Time, n int) []string {
 	days := []string{}
@@ -446,7 +463,7 @@ func (w Worker) saveItem(ctx context.Context, item djenItem, tribunal, version s
 		return e
 	}
 	if oldHash != "" && oldHash != item.Hash {
-		_, _ = w.DB.ExecContext(ctx, `UPDATE user_publications SET analysis_status='PENDING',analysis_attempts=0 WHERE publication_id=$1`, id)
+		_, _ = w.DB.ExecContext(ctx, `UPDATE user_publications SET analysis_status='PENDING',analysis_attempts=0,llm_assisted=FALSE WHERE publication_id=$1`, id)
 		_, _ = w.DB.ExecContext(ctx, `UPDATE deadline_suggestions SET status='NEEDS_REVIEW' WHERE publication_id=$1 AND status='PENDING'`, id)
 		_, _ = w.DB.ExecContext(ctx, `UPDATE deadlines SET needs_review=TRUE WHERE publication_id=$1`, id)
 	}
@@ -464,13 +481,13 @@ func (w Worker) saveItem(ctx context.Context, item djenItem, tribunal, version s
 		if day, _ := time.Parse("2006-01-02", available); time.Since(day) < 4*24*time.Hour {
 			_, _ = w.DB.ExecContext(ctx, `INSERT INTO recent_publication_matches(source_id,oab_uf,oab_number,available_on,expires_at) VALUES($1,$2,$3,$4,$4::date+interval '4 days') ON CONFLICT(source_id,oab_uf,oab_number) DO UPDATE SET expires_at=excluded.expires_at`, "DJEN:"+source, uf, number, available)
 		}
-		_, _ = w.DB.ExecContext(ctx, `INSERT INTO user_publications(user_id,publication_id) SELECT id,$1 FROM users WHERE oab_number=$2 AND oab_uf=$3 AND active AND (labor_practice OR $4<>'TRT24') AND $5::date >= (monitoring_started_at AT TIME ZONE 'America/Campo_Grande')::date-1 ON CONFLICT DO NOTHING`, id, number, uf, tribunal, available)
+		_, _ = w.DB.ExecContext(ctx, `INSERT INTO user_publications(user_id,publication_id) SELECT id,$1 FROM users WHERE oab_number=$2 AND oab_uf=$3 AND active AND llm_consent AND (labor_practice OR $4<>'TRT24') AND $5::date >= (monitoring_started_at AT TIME ZONE 'America/Campo_Grande')::date-1 ON CONFLICT DO NOTHING`, id, number, uf, tribunal, available)
 	}
 	_, _ = w.DB.ExecContext(ctx, `INSERT INTO case_publications(user_id,case_id,publication_id) SELECT c.user_id,c.id,$1 FROM cases c JOIN user_publications up ON up.user_id=c.user_id AND up.publication_id=$1 WHERE c.case_number=$2 ON CONFLICT DO NOTHING`, id, caseNo)
 	return nil
 }
 func (w Worker) analyze(ctx context.Context) error {
-	rows, e := w.DB.QueryContext(ctx, `SELECT up.user_id::text,p.id::text,p.content_text,p.available_on::text,p.tribunal,u.llm_consent,coalesce(c.locality,''),coalesce(c.id::text,'') FROM user_publications up JOIN publications p ON p.id=up.publication_id JOIN users u ON u.id=up.user_id LEFT JOIN LATERAL (SELECT id,locality FROM cases WHERE user_id=up.user_id AND case_number=p.case_number AND tribunal=p.tribunal LIMIT 1) c ON true WHERE up.analysis_status IN ('PENDING','RETRY') AND up.analysis_attempts<3 ORDER BY up.created_at LIMIT 1000`)
+	rows, e := w.DB.QueryContext(ctx, `SELECT up.user_id::text,p.id::text,p.content_text,p.available_on::text,p.tribunal,u.llm_consent,coalesce(c.locality,''),coalesce(c.id::text,'') FROM user_publications up JOIN publications p ON p.id=up.publication_id JOIN users u ON u.id=up.user_id LEFT JOIN LATERAL (SELECT id,locality FROM cases WHERE user_id=up.user_id AND case_number=p.case_number AND tribunal=p.tribunal LIMIT 1) c ON true WHERE u.llm_consent AND up.analysis_status IN ('PENDING','RETRY') AND up.analysis_attempts<3 ORDER BY up.created_at LIMIT 1000`)
 	if e != nil {
 		return e
 	}
@@ -489,7 +506,9 @@ func (w Worker) analyze(ctx context.Context) error {
 	for _, t := range tasks {
 		candidates := extract.Rules(t.text)
 		status := "DONE"
+		llmAssisted := false
 		if len(candidates) == 0 && t.consent {
+			llmAssisted = true
 			var err error
 			provider := w.LLM
 			if provider == nil {
@@ -523,7 +542,7 @@ func (w Worker) analyze(ctx context.Context) error {
 				log.Printf("suggestion insert: %v", err)
 			}
 		}
-		_, _ = w.DB.ExecContext(ctx, `UPDATE user_publications SET analysis_status=CASE WHEN $3='RETRY' AND analysis_attempts>=2 THEN 'FAILED' ELSE $3 END,analysis_attempts=analysis_attempts+1 WHERE user_id=$1 AND publication_id=$2`, t.user, t.pub, status)
+		_, _ = w.DB.ExecContext(ctx, `UPDATE user_publications SET analysis_status=CASE WHEN $3='RETRY' AND analysis_attempts>=2 THEN 'FAILED' ELSE $3 END,analysis_attempts=analysis_attempts+1,llm_assisted=llm_assisted OR $4 WHERE user_id=$1 AND publication_id=$2`, t.user, t.pub, status, llmAssisted)
 	}
 	return nil
 }

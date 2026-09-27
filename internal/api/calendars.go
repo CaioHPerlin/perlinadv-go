@@ -168,8 +168,23 @@ func (s *Server) syncStatus(w http.ResponseWriter, r *http.Request) {
 			items = append(items, map[string]any{"tribunal": t, "lastEdition": last.String, "failedEditions": failures})
 		}
 	}
-	var analysisFailed, googleFailed int
+	var analysisFailed, googleFailed, lawyerPollFailed int
 	_ = s.DB.QueryRowContext(r.Context(), `SELECT count(*) FROM user_publications WHERE analysis_status='FAILED'`).Scan(&analysisFailed)
 	_ = s.DB.QueryRowContext(r.Context(), `SELECT count(*) FROM google_jobs WHERE status='FAILED'`).Scan(&googleFailed)
-	write(w, 200, map[string]any{"items": items, "analysisFailures": analysisFailed, "googleFailures": googleFailed})
+	_ = s.DB.QueryRowContext(r.Context(), `SELECT count(*) FROM djen_lawyer_syncs WHERE status='FAILED'`).Scan(&lawyerPollFailed)
+	polls := []map[string]any{}
+	pollRows, err := s.DB.QueryContext(r.Context(), `SELECT user_id::text,tribunal,status,coalesce(last_succeeded_at::text,''),item_count,last_error FROM djen_lawyer_syncs ORDER BY last_started_at DESC NULLS LAST LIMIT 100`)
+	if err != nil {
+		fail(w, 500, "database error")
+		return
+	}
+	defer pollRows.Close()
+	for pollRows.Next() {
+		var userID, tribunal, status, lastSuccess, lastError string
+		var count int
+		if pollRows.Scan(&userID, &tribunal, &status, &lastSuccess, &count, &lastError) == nil {
+			polls = append(polls, map[string]any{"userId": userID, "tribunal": tribunal, "status": status, "lastSucceededAt": lastSuccess, "itemCount": count, "lastError": lastError})
+		}
+	}
+	write(w, 200, map[string]any{"items": items, "lawyerPolls": polls, "lawyerPollFailures": lawyerPollFailed, "analysisFailures": analysisFailed, "googleFailures": googleFailed})
 }
