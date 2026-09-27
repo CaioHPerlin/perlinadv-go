@@ -33,8 +33,8 @@ func optionalID(id uuid.NullUUID) string {
 	}
 	return ""
 }
-func deadlineValue(id uuid.UUID, caseID, publicationID, suggestionID uuid.NullUUID, title, description string, due time.Time, status string, review bool) map[string]any {
-	return map[string]any{"id": id.String(), "caseId": optionalID(caseID), "publicationId": optionalID(publicationID), "suggestionId": optionalID(suggestionID), "title": title, "description": description, "dueOn": due.Format("2006-01-02"), "status": status, "needsReview": review}
+func deadlineValue(id uuid.UUID, caseID, publicationID, suggestionID uuid.NullUUID, title, description string, due time.Time, status string, review, llmAssisted bool) map[string]any {
+	return map[string]any{"id": id.String(), "caseId": optionalID(caseID), "publicationId": optionalID(publicationID), "suggestionId": optionalID(suggestionID), "title": title, "description": description, "dueOn": due.Format("2006-01-02"), "status": status, "needsReview": review, "llmAssisted": llmAssisted}
 }
 func (s *Server) ownedCaseID(r *http.Request, raw string) (uuid.NullUUID, bool) {
 	if raw == "" {
@@ -58,7 +58,7 @@ func (s *Server) listDeadlines(w http.ResponseWriter, r *http.Request) {
 	}
 	items := []map[string]any{}
 	for _, v := range rows {
-		items = append(items, deadlineValue(v.ID, v.CaseID, v.PublicationID, v.SuggestionID, v.Title, v.Description, v.DueOn, v.Status, v.NeedsReview))
+		items = append(items, deadlineValue(v.ID, v.CaseID, v.PublicationID, v.SuggestionID, v.Title, v.Description, v.DueOn, v.Status, v.NeedsReview, v.LlmAssisted))
 	}
 	write(w, 200, map[string]any{"items": items, "page": p})
 }
@@ -78,7 +78,7 @@ func (s *Server) getDeadline(w http.ResponseWriter, r *http.Request) {
 		fail(w, 400, "invalid deadline id")
 		return
 	}
-	write(w, 200, deadlineValue(v.ID, v.CaseID, v.PublicationID, v.SuggestionID, v.Title, v.Description, v.DueOn, v.Status, v.NeedsReview))
+	write(w, 200, deadlineValue(v.ID, v.CaseID, v.PublicationID, v.SuggestionID, v.Title, v.Description, v.DueOn, v.Status, v.NeedsReview, v.LlmAssisted))
 }
 func (s *Server) createDeadline(w http.ResponseWriter, r *http.Request) {
 	var b deadlineBody
@@ -174,7 +174,7 @@ func (s *Server) listSuggestions(w http.ResponseWriter, r *http.Request) {
 		if rows.Scan(&id, &pid, &action, &evidence, &days, &unit, &method, &version, &status, &due, &pub, &first, &calc) == nil {
 			var audit any
 			_ = json.Unmarshal(calc, &audit)
-			items = append(items, map[string]any{"id": id, "publicationId": pid, "action": action, "evidence": evidence, "durationDays": days, "unit": unit, "method": method, "ruleVersion": version, "status": status, "suggestedDueOn": due, "publicationOn": pub, "firstCountedOn": first, "calculation": audit})
+			items = append(items, map[string]any{"id": id, "publicationId": pid, "action": action, "evidence": evidence, "durationDays": days, "unit": unit, "method": method, "llmAssisted": method == "LLM", "ruleVersion": version, "status": status, "suggestedDueOn": due, "publicationOn": pub, "firstCountedOn": first, "calculation": audit})
 		}
 	}
 	write(w, 200, map[string]any{"items": items, "page": p})

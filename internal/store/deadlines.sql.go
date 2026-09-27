@@ -74,8 +74,9 @@ func (q *Queries) DeleteDeadline(ctx context.Context, arg DeleteDeadlineParams) 
 }
 
 const getDeadline = `-- name: GetDeadline :one
-SELECT id,case_id,publication_id,suggestion_id,title,description,due_on,status,needs_review
-FROM deadlines WHERE id=$1 AND user_id=$2
+SELECT d.id,d.case_id,d.publication_id,d.suggestion_id,d.title,d.description,d.due_on,d.status,d.needs_review,
+  EXISTS(SELECT 1 FROM deadline_suggestions ds WHERE ds.id=d.suggestion_id AND ds.method='LLM') AS llm_assisted
+FROM deadlines d WHERE d.id=$1 AND d.user_id=$2
 `
 
 type GetDeadlineParams struct {
@@ -93,6 +94,7 @@ type GetDeadlineRow struct {
 	DueOn         time.Time     `json:"due_on"`
 	Status        string        `json:"status"`
 	NeedsReview   bool          `json:"needs_review"`
+	LlmAssisted   bool          `json:"llm_assisted"`
 }
 
 func (q *Queries) GetDeadline(ctx context.Context, arg GetDeadlineParams) (GetDeadlineRow, error) {
@@ -108,13 +110,15 @@ func (q *Queries) GetDeadline(ctx context.Context, arg GetDeadlineParams) (GetDe
 		&i.DueOn,
 		&i.Status,
 		&i.NeedsReview,
+		&i.LlmAssisted,
 	)
 	return i, err
 }
 
 const listDeadlines = `-- name: ListDeadlines :many
-SELECT id,case_id,publication_id,suggestion_id,title,description,due_on,status,needs_review
-FROM deadlines WHERE user_id=$1 ORDER BY due_on ASC LIMIT $2 OFFSET $3
+SELECT d.id,d.case_id,d.publication_id,d.suggestion_id,d.title,d.description,d.due_on,d.status,d.needs_review,
+  EXISTS(SELECT 1 FROM deadline_suggestions ds WHERE ds.id=d.suggestion_id AND ds.method='LLM') AS llm_assisted
+FROM deadlines d WHERE d.user_id=$1 ORDER BY d.due_on ASC LIMIT $2 OFFSET $3
 `
 
 type ListDeadlinesParams struct {
@@ -133,6 +137,7 @@ type ListDeadlinesRow struct {
 	DueOn         time.Time     `json:"due_on"`
 	Status        string        `json:"status"`
 	NeedsReview   bool          `json:"needs_review"`
+	LlmAssisted   bool          `json:"llm_assisted"`
 }
 
 func (q *Queries) ListDeadlines(ctx context.Context, arg ListDeadlinesParams) ([]ListDeadlinesRow, error) {
@@ -154,6 +159,7 @@ func (q *Queries) ListDeadlines(ctx context.Context, arg ListDeadlinesParams) ([
 			&i.DueOn,
 			&i.Status,
 			&i.NeedsReview,
+			&i.LlmAssisted,
 		); err != nil {
 			return nil, err
 		}

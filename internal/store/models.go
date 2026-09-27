@@ -106,6 +106,16 @@ type DjenEdition struct {
 	ProcessedAt   sql.NullTime `json:"processed_at"`
 }
 
+type DjenLawyerSync struct {
+	UserID          uuid.UUID    `json:"user_id"`
+	Tribunal        string       `json:"tribunal"`
+	Status          string       `json:"status"`
+	LastStartedAt   sql.NullTime `json:"last_started_at"`
+	LastSucceededAt sql.NullTime `json:"last_succeeded_at"`
+	ItemCount       int32        `json:"item_count"`
+	LastError       string       `json:"last_error"`
+}
+
 type GoogleConnection struct {
 	UserID             uuid.UUID    `json:"user_id"`
 	RefreshTokenCipher []byte       `json:"refresh_token_cipher"`
@@ -198,6 +208,7 @@ type User struct {
 	LaborPractice       bool           `json:"labor_practice"`
 	LlmConsent          bool           `json:"llm_consent"`
 	MonitoringStartedAt time.Time      `json:"monitoring_started_at"`
+	LlmConsentedAt      sql.NullTime   `json:"llm_consented_at"`
 }
 
 type UserPublication struct {
@@ -207,4 +218,5 @@ type UserPublication struct {
 	AnalysisStatus   string    `json:"analysis_status"`
 	AnalysisAttempts int32     `json:"analysis_attempts"`
 	CreatedAt        time.Time `json:"created_at"`
+	LlmAssisted      bool      `json:"llm_assisted"`
 }

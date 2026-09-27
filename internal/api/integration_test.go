@@ -43,8 +43,12 @@ func TestOwnedCRUDIntegration(t *testing.T) {
 		_ = json.Unmarshal(w.Body.Bytes(), &data)
 		return w.Code, data
 	}
+	code, _ := call("POST", "/v1/auth/register", "", map[string]any{"name": "Tester", "email": email1, "password": "twelve-characters-123", "oabNumber": suffix + "x", "oabUf": "MS"})
+	if code != 400 {
+		t.Fatalf("registration without consent: %d", code)
+	}
 	for i, email := range []string{email1, email2} {
-		code, data := call("POST", "/v1/auth/register", "", map[string]any{"name": "Tester", "email": email, "password": "twelve-characters-123", "oabNumber": fmt.Sprintf("%s%d", suffix, i), "oabUf": "MS"})
+		code, data := call("POST", "/v1/auth/register", "", map[string]any{"name": "Tester", "email": email, "password": "twelve-characters-123", "oabNumber": fmt.Sprintf("%s%d", suffix, i), "oabUf": "MS", "llmConsent": true})
 		if code != 201 {
 			t.Fatalf("register %d: %d %v", i, code, data)
 		}
@@ -59,6 +63,17 @@ func TestOwnedCRUDIntegration(t *testing.T) {
 		t.Fatalf("login2: %d %v", code, login2)
 	}
 	token2 := login2["token"].(string)
+	if _, err = s.DB.Exec(`UPDATE users SET llm_consent=FALSE,llm_consented_at=NULL WHERE email=$1`, email2); err != nil {
+		t.Fatal(err)
+	}
+	code, denied := call("GET", "/v1/dashboard", token2, nil)
+	if code != 403 || denied["consentRequired"] != true {
+		t.Fatalf("legacy account consent gate: %d %v", code, denied)
+	}
+	code, _ = call("PATCH", "/v1/me", token2, map[string]any{"llmConsent": true})
+	if code != 200 {
+		t.Fatalf("legacy account consent update: %d", code)
+	}
 	code, created := call("POST", "/v1/cases", token1, map[string]string{"caseNumber": "00000000000000000001", "title": "Processo de teste", "tribunal": "TJMS", "locality": "NOVA ANDRADINA"})
 	if code != 200 {
 		t.Fatalf("create case: %d %v", code, created)
@@ -92,6 +107,14 @@ func TestOwnedCRUDIntegration(t *testing.T) {
 	if err = s.DB.QueryRow(`INSERT INTO deadline_suggestions(user_id,publication_id,action,evidence,duration_days,unit,method,rule_version,suggested_due_on) VALUES($1,$2,'apresentar','3 dias úteis',3,'BUSINESS_DAYS','RULE','test','2026-09-11') RETURNING id::text`, uid, publicationID).Scan(&suggestionID); err != nil {
 		t.Fatal(err)
 	}
+	code, publication := call("GET", "/v1/publications/"+publicationID, token1, nil)
+	if code != 200 || publication["llmAssisted"] != false {
+		t.Fatalf("rule publication provenance: %d %v", code, publication)
+	}
+	code, suggestions := call("GET", "/v1/suggestions", token1, nil)
+	if code != 200 || len(suggestions["items"].([]any)) == 0 || suggestions["items"].([]any)[0].(map[string]any)["llmAssisted"] != false {
+		t.Fatalf("rule suggestion provenance: %d %v", code, suggestions)
+	}
 	_, err = s.DB.Exec(`INSERT INTO google_connections(user_id,refresh_token_cipher,calendar_id) VALUES($1,$2,'primary')`, uid, []byte{1})
 	if err != nil {
 		t.Fatal(err)
@@ -105,9 +128,9 @@ func TestOwnedCRUDIntegration(t *testing.T) {
 	if code != 404 {
 		t.Fatalf("cross-user confirmation: %d", code)
 	}
-	code, _ = call("POST", "/v1/suggestions/"+suggestionID+"/confirm", token1, map[string]string{"title": "Revisado", "dueOn": "2026-09-12"})
-	if code != 200 {
-		t.Fatalf("confirmation: %d", code)
+	code, confirmed := call("POST", "/v1/suggestions/"+suggestionID+"/confirm", token1, map[string]string{"title": "Revisado", "dueOn": "2026-09-12"})
+	if code != 200 || confirmed["llmAssisted"] != false {
+		t.Fatalf("confirmation provenance: %d %v", code, confirmed)
 	}
 	_ = s.DB.QueryRow(`SELECT count(*) FROM google_jobs WHERE user_id=$1`, uid).Scan(&jobs)
 	if jobs != 1 {

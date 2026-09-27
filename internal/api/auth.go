@@ -42,6 +42,10 @@ func (s *Server) register(w http.ResponseWriter, r *http.Request) {
 		fail(w, 400, "name, email, password (12+ characters), OAB and UF required")
 		return
 	}
+	if !b.LLMConsent {
+		fail(w, 400, "llmConsent=true is required to create an account")
+		return
+	}
 	ph, err := bcrypt.GenerateFromPassword([]byte(b.Password), bcrypt.DefaultCost)
 	if err != nil {
 		fail(w, 500, "password error")
@@ -82,7 +86,7 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 		fail(w, 500, "session error")
 		return
 	}
-	write(w, 200, map[string]any{"token": t, "expiresInSeconds": 604800, "role": account.Role})
+	write(w, 200, map[string]any{"token": t, "expiresInSeconds": 604800, "role": account.Role, "consentRequired": account.Role != "ADMIN" && !account.LlmConsent})
 }
 func (s *Server) logout(w http.ResponseWriter, r *http.Request) {
 	t := strings.Fields(r.Header.Get("Authorization"))[1]
@@ -114,7 +118,11 @@ func (s *Server) updateMe(w http.ResponseWriter, r *http.Request) {
 		fail(w, 400, "name required")
 		return
 	}
-	_, err := s.DB.ExecContext(r.Context(), `UPDATE users SET name=coalesce($2,name),labor_practice=coalesce($3,labor_practice),llm_consent=coalesce($4,llm_consent),updated_at=now() WHERE id=$1`, user(r).ID, b.Name, b.LaborPractice, b.LLMConsent)
+	if b.LLMConsent != nil && !*b.LLMConsent {
+		fail(w, 400, "AI processing consent is required to use the platform")
+		return
+	}
+	_, err := s.DB.ExecContext(r.Context(), `UPDATE users SET name=coalesce($2,name),labor_practice=coalesce($3,labor_practice),llm_consent=coalesce($4,llm_consent),llm_consented_at=CASE WHEN $4::boolean=TRUE AND llm_consented_at IS NULL THEN now() ELSE llm_consented_at END,updated_at=now() WHERE id=$1`, user(r).ID, b.Name, b.LaborPractice, b.LLMConsent)
 	if err != nil {
 		fail(w, 500, "database error")
 		return

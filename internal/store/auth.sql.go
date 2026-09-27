@@ -13,8 +13,8 @@ import (
 )
 
 const createLawyer = `-- name: CreateLawyer :one
-INSERT INTO users(name,email,password_hash,oab_number,oab_uf,labor_practice,llm_consent)
-VALUES($1,$2,$3,$4,$5,$6,$7) RETURNING id
+INSERT INTO users(name,email,password_hash,oab_number,oab_uf,labor_practice,llm_consent,llm_consented_at)
+VALUES($1,$2,$3,$4,$5,$6,$7,now()) RETURNING id
 `
 
 type CreateLawyerParams struct {
@@ -58,36 +58,43 @@ func (q *Queries) CreateSession(ctx context.Context, arg CreateSessionParams) er
 }
 
 const getLoginUser = `-- name: GetLoginUser :one
-SELECT id,role,password_hash FROM users WHERE email=$1 AND active
+SELECT id,role,password_hash,llm_consent FROM users WHERE email=$1 AND active
 `
 
 type GetLoginUserRow struct {
 	ID           uuid.UUID `json:"id"`
 	Role         string    `json:"role"`
 	PasswordHash string    `json:"password_hash"`
+	LlmConsent   bool      `json:"llm_consent"`
 }
 
 func (q *Queries) GetLoginUser(ctx context.Context, email string) (GetLoginUserRow, error) {
 	row := q.db.QueryRowContext(ctx, getLoginUser, email)
 	var i GetLoginUserRow
-	err := row.Scan(&i.ID, &i.Role, &i.PasswordHash)
+	err := row.Scan(
+		&i.ID,
+		&i.Role,
+		&i.PasswordHash,
+		&i.LlmConsent,
+	)
 	return i, err
 }
 
 const getSessionPrincipal = `-- name: GetSessionPrincipal :one
-SELECT u.id,u.role FROM sessions se JOIN users u ON u.id=se.user_id
+SELECT u.id,u.role,u.llm_consent FROM sessions se JOIN users u ON u.id=se.user_id
 WHERE se.token_hash=$1 AND se.expires_at>now() AND se.revoked_at IS NULL AND u.active
 `
 
 type GetSessionPrincipalRow struct {
-	ID   uuid.UUID `json:"id"`
-	Role string    `json:"role"`
+	ID         uuid.UUID `json:"id"`
+	Role       string    `json:"role"`
+	LlmConsent bool      `json:"llm_consent"`
 }
 
 func (q *Queries) GetSessionPrincipal(ctx context.Context, tokenHash []byte) (GetSessionPrincipalRow, error) {
 	row := q.db.QueryRowContext(ctx, getSessionPrincipal, tokenHash)
 	var i GetSessionPrincipalRow
-	err := row.Scan(&i.ID, &i.Role)
+	err := row.Scan(&i.ID, &i.Role, &i.LlmConsent)
 	return i, err
 }
 

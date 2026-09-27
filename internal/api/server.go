@@ -26,7 +26,10 @@ type Server struct {
 	router *chi.Mux
 	HTTP   *http.Client
 }
-type principal struct{ ID, Role string }
+type principal struct {
+	ID, Role   string
+	LLMConsent bool
+}
 type contextKey string
 
 const principalKey contextKey = "principal"
@@ -71,38 +74,41 @@ func (s *Server) routes() {
 			r.Get("/me", s.me)
 			r.Patch("/me", s.updateMe)
 			r.Delete("/me", s.deleteMe)
-			r.Get("/cases", s.listCases)
-			r.Post("/cases", s.createCase)
-			r.Get("/cases/{id}", s.getCase)
-			r.Put("/cases/{id}", s.updateCase)
-			r.Delete("/cases/{id}", s.deleteCase)
-			r.Get("/publications", s.listPublications)
-			r.Get("/publications/{id}", s.getPublication)
-			r.Patch("/publications/{id}/read", s.setPublicationRead)
-			r.Post("/publications/{id}/cases/{caseID}", s.linkPublication)
-			r.Delete("/publications/{id}/cases/{caseID}", s.unlinkPublication)
-			r.Get("/suggestions", s.listSuggestions)
-			r.Post("/suggestions/{id}/confirm", s.confirmSuggestion)
-			r.Post("/suggestions/{id}/discard", s.discardSuggestion)
-			r.Get("/deadlines", s.listDeadlines)
-			r.Post("/deadlines", s.createDeadline)
-			r.Get("/deadlines/{id}", s.getDeadline)
-			r.Put("/deadlines/{id}", s.updateDeadline)
-			r.Delete("/deadlines/{id}", s.deleteDeadline)
-			r.Get("/dashboard", s.dashboard)
-			r.Get("/google/status", s.googleStatus)
-			r.Get("/google/connect", s.googleConnect)
-			r.Get("/google/calendars", s.googleCalendars)
-			r.Put("/google/calendar", s.googleSelectCalendar)
-			r.Delete("/google/connection", s.googleDisconnect)
 			r.Group(func(r chi.Router) {
-				r.Use(s.admin)
-				r.Get("/admin/lawyers", s.listLawyers)
-				r.Patch("/admin/lawyers/{id}", s.updateLawyer)
-				r.Get("/admin/calendars", s.listCalendars)
-				r.Post("/admin/calendars/import", s.importCalendar)
-				r.Post("/admin/calendars/{id}/approve", s.approveCalendar)
-				r.Get("/admin/sync", s.syncStatus)
+				r.Use(s.requireConsent)
+				r.Get("/cases", s.listCases)
+				r.Post("/cases", s.createCase)
+				r.Get("/cases/{id}", s.getCase)
+				r.Put("/cases/{id}", s.updateCase)
+				r.Delete("/cases/{id}", s.deleteCase)
+				r.Get("/publications", s.listPublications)
+				r.Get("/publications/{id}", s.getPublication)
+				r.Patch("/publications/{id}/read", s.setPublicationRead)
+				r.Post("/publications/{id}/cases/{caseID}", s.linkPublication)
+				r.Delete("/publications/{id}/cases/{caseID}", s.unlinkPublication)
+				r.Get("/suggestions", s.listSuggestions)
+				r.Post("/suggestions/{id}/confirm", s.confirmSuggestion)
+				r.Post("/suggestions/{id}/discard", s.discardSuggestion)
+				r.Get("/deadlines", s.listDeadlines)
+				r.Post("/deadlines", s.createDeadline)
+				r.Get("/deadlines/{id}", s.getDeadline)
+				r.Put("/deadlines/{id}", s.updateDeadline)
+				r.Delete("/deadlines/{id}", s.deleteDeadline)
+				r.Get("/dashboard", s.dashboard)
+				r.Get("/google/status", s.googleStatus)
+				r.Get("/google/connect", s.googleConnect)
+				r.Get("/google/calendars", s.googleCalendars)
+				r.Put("/google/calendar", s.googleSelectCalendar)
+				r.Delete("/google/connection", s.googleDisconnect)
+				r.Group(func(r chi.Router) {
+					r.Use(s.admin)
+					r.Get("/admin/lawyers", s.listLawyers)
+					r.Patch("/admin/lawyers/{id}", s.updateLawyer)
+					r.Get("/admin/calendars", s.listCalendars)
+					r.Post("/admin/calendars/import", s.importCalendar)
+					r.Post("/admin/calendars/{id}/approve", s.approveCalendar)
+					r.Get("/admin/sync", s.syncStatus)
+				})
 			})
 		})
 	})
@@ -185,7 +191,17 @@ func (s *Server) auth(next http.Handler) http.Handler {
 			fail(w, 401, "invalid session")
 			return
 		}
-		next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), principalKey, principal{ID: account.ID.String(), Role: account.Role})))
+		next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), principalKey, principal{ID: account.ID.String(), Role: account.Role, LLMConsent: account.LlmConsent})))
+	})
+}
+func (s *Server) requireConsent(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		p := user(r)
+		if p.Role != "ADMIN" && !p.LLMConsent {
+			write(w, 403, map[string]any{"error": "AI processing consent required", "consentRequired": true})
+			return
+		}
+		next.ServeHTTP(w, r)
 	})
 }
 func (s *Server) admin(next http.Handler) http.Handler {

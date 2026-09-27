@@ -5,16 +5,16 @@ import (
 	"net/http"
 )
 
-const publicationColumns = `p.id::text,p.source_id,p.tribunal,p.judicial_unit,p.case_number,p.title,p.content_html,p.content_text,p.available_on::text,p.situation,p.source_url,up.is_read,up.analysis_status`
+const publicationColumns = `p.id::text,p.source_id,p.tribunal,p.judicial_unit,p.case_number,p.title,p.content_html,p.content_text,p.available_on::text,p.situation,p.source_url,up.is_read,up.analysis_status,up.llm_assisted`
 
 func scanPublication(row interface{ Scan(...any) error }) (map[string]any, error) {
 	var id, source, tribunal, unit, number, title, html, plain, day, situation, url, analysis string
-	var read bool
-	err := row.Scan(&id, &source, &tribunal, &unit, &number, &title, &html, &plain, &day, &situation, &url, &read, &analysis)
+	var read, llmAssisted bool
+	err := row.Scan(&id, &source, &tribunal, &unit, &number, &title, &html, &plain, &day, &situation, &url, &read, &analysis, &llmAssisted)
 	if err != nil {
 		return nil, err
 	}
-	return map[string]any{"id": id, "sourceId": source, "tribunal": tribunal, "judicialUnit": unit, "caseNumber": number, "title": title, "contentHtml": html, "contentText": plain, "availableOn": day, "situation": situation, "sourceUrl": url, "isRead": read, "analysisStatus": analysis}, nil
+	return map[string]any{"id": id, "sourceId": source, "tribunal": tribunal, "judicialUnit": unit, "caseNumber": number, "title": title, "contentHtml": html, "contentText": plain, "availableOn": day, "situation": situation, "sourceUrl": url, "isRead": read, "analysisStatus": analysis, "llmAssisted": llmAssisted}, nil
 }
 func (s *Server) listPublications(w http.ResponseWriter, r *http.Request) {
 	p, l := page(r)
