@@ -1,21 +1,22 @@
 package main
 
 import (
-	"log/slog"
+	"github.com/caiohperlin/perlinadv/internal/api"
+	"log"
+	"net/http"
 	"os"
-
-	"github.com/caiohperlin/perlinadv/internal/application"
-	"github.com/caiohperlin/perlinadv/internal/config"
 )
 
 func main() {
-	logger := slog.New(slog.NewTextHandler(os.Stdout, nil))
-	slog.SetDefault(logger)
-
-	cfg := config.Defaults()
-	api := application.New(cfg)
-	if err := api.Run(); err != nil {
-		slog.Error("Server has failed to start", "error", err)
-		os.Exit(1)
+	s, err := api.New()
+	if err != nil {
+		log.Fatal(err)
 	}
+	defer s.Close()
+	addr := os.Getenv("ADDRESS")
+	if addr == "" {
+		addr = ":3000"
+	}
+	log.Printf("API listening on %s", addr)
+	log.Fatal(http.ListenAndServe(addr, s.Router()))
 }
