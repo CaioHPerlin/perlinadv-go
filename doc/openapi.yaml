@@ -1,0 +1,288 @@
+openapi: 3.0.3
+info:
+  title: PerlinAdv API
+  version: 0.1.0
+  description: API de gestão de processos, publicações DJEN e sugestões de prazo. Datas calculadas exigem confirmação humana.
+servers:
+  - url: http://localhost:3000
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+  schemas:
+    Error:
+      type: object
+      properties:
+        error: { type: string }
+    Registration:
+      type: object
+      required: [name, email, password, oabNumber, oabUf]
+      properties:
+        name: { type: string }
+        email: { type: string, format: email }
+        password: { type: string, minLength: 12 }
+        oabNumber: { type: string }
+        oabUf: { type: string, minLength: 2, maxLength: 2 }
+        laborPractice: { type: boolean }
+        llmConsent: { type: boolean }
+    Case:
+      type: object
+      required: [caseNumber, title]
+      properties:
+        caseNumber: { type: string, description: Número CNJ com 20 dígitos }
+        folderNumber: { type: string }
+        title: { type: string }
+        description: { type: string }
+        status: { type: string, enum: [IN_PROGRESS, SUSPENDED, ARCHIVED, CLOSED] }
+        notes: { type: string }
+        tribunal: { type: string, enum: [TJMS, TRF3, TRT24] }
+        locality: { type: string, description: Comarca TJMS/TRT24 ou seção TRF3 para cálculo }
+        judicialUnit: { type: string }
+    Deadline:
+      type: object
+      required: [title, dueOn]
+      properties:
+        caseId: { type: string, format: uuid }
+        title: { type: string }
+        description: { type: string }
+        dueOn: { type: string, format: date }
+        status: { type: string, enum: [ACTIVE, COMPLETED, CANCELED] }
+    CalendarImport:
+      type: object
+      required: [tribunal, scopeType, scopeKey, coverageStart, coverageEnd, sourceTitle, sourceUrl, days]
+      properties:
+        tribunal: { type: string, enum: [TJMS, TRF3, TRT24] }
+        scopeType: { type: string, enum: [TRIBUNAL, SECTION, COMARCA] }
+        scopeKey: { type: string }
+        coverageStart: { type: string, format: date }
+        coverageEnd: { type: string, format: date }
+        sourceTitle: { type: string }
+        sourceUrl: { type: string, format: uri }
+        days:
+          type: array
+          items:
+            type: object
+            required: [day, effect, authorityUrl]
+            properties:
+              day: { type: string, format: date }
+              effect: { type: string, enum: [CLOSED, DEADLINE_SUSPENDED, PARTIAL, INFO] }
+              title: { type: string }
+              authorityUrl: { type: string, format: uri }
+paths:
+  /health:
+    get:
+      summary: Saúde do processo HTTP
+      responses:
+        '200': { description: API online }
+  /v1/auth/register:
+    post:
+      summary: Cadastrar advogado
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/Registration' } } } }
+      responses:
+        '201': { description: Cadastrado }
+        '409': { description: Email ou OAB já cadastrado }
+  /v1/auth/login:
+    post:
+      summary: Criar sessão de sete dias
+      requestBody: { required: true, content: { application/json: { schema: { type: object, required: [email, password], properties: { email: { type: string }, password: { type: string } } } } } }
+      responses:
+        '200': { description: Token bearer }
+        '401': { description: Credenciais inválidas }
+  /v1/auth/logout:
+    post:
+      security: [{ bearerAuth: [] }]
+      summary: Revogar sessão
+      responses: { '204': { description: Revogada } }
+  /v1/auth/password-reset/request:
+    post:
+      summary: Solicitar token de redefinição por email
+      requestBody: { required: true, content: { application/json: { schema: { type: object, properties: { email: { type: string } } } } } }
+      responses: { '202': { description: Aceito sem revelar a existência da conta } }
+  /v1/auth/password-reset/confirm:
+    post:
+      summary: Redefinir senha e revogar sessões
+      requestBody: { required: true, content: { application/json: { schema: { type: object, properties: { token: { type: string }, password: { type: string, minLength: 12 } } } } } }
+      responses: { '200': { description: Senha atualizada }, '400': { description: Token inválido ou expirado } }
+  /v1/me:
+    get:
+      security: [{ bearerAuth: [] }]
+      summary: Consultar perfil
+      responses: { '200': { description: Perfil } }
+    patch:
+      security: [{ bearerAuth: [] }]
+      summary: Alterar nome, atuação trabalhista e consentimento de LLM
+      requestBody: { required: true, content: { application/json: { schema: { type: object, properties: { name: { type: string }, laborPractice: { type: boolean }, llmConsent: { type: boolean } } } } } }
+      responses: { '200': { description: Perfil atualizado } }
+    delete:
+      security: [{ bearerAuth: [] }]
+      summary: Excluir conta e dados locais associados
+      responses: { '204': { description: Excluída } }
+  /v1/cases:
+    get:
+      security: [{ bearerAuth: [] }]
+      summary: Listar processos próprios
+      parameters: [{ in: query, name: page, schema: { type: integer } }, { in: query, name: limit, schema: { type: integer } }, { in: query, name: status, schema: { type: string } }, { in: query, name: q, schema: { type: string } }]
+      responses: { '200': { description: Página de processos } }
+    post:
+      security: [{ bearerAuth: [] }]
+      summary: Criar processo
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/Case' } } } }
+      responses: { '200': { description: Processo criado } }
+  /v1/cases/{id}:
+    parameters: [{ in: path, name: id, required: true, schema: { type: string, format: uuid } }]
+    get:
+      security: [{ bearerAuth: [] }]
+      summary: Consultar processo
+      responses: { '200': { description: Processo }, '404': { description: Não encontrado } }
+    put:
+      security: [{ bearerAuth: [] }]
+      summary: Substituir dados do processo
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/Case' } } } }
+      responses: { '200': { description: Processo atualizado } }
+    delete:
+      security: [{ bearerAuth: [] }]
+      summary: Excluir processo
+      responses: { '204': { description: Excluído } }
+  /v1/publications:
+    get:
+      security: [{ bearerAuth: [] }]
+      summary: Listar e buscar publicações próprias
+      parameters: [{ in: query, name: q, schema: { type: string } }, { in: query, name: tribunal, schema: { type: string } }, { in: query, name: page, schema: { type: integer } }]
+      responses: { '200': { description: Página de publicações } }
+  /v1/publications/{id}:
+    parameters: [{ in: path, name: id, required: true, schema: { type: string, format: uuid } }]
+    get:
+      security: [{ bearerAuth: [] }]
+      summary: Texto integral e metadados da publicação
+      responses: { '200': { description: Publicação } }
+  /v1/publications/{id}/read:
+    patch:
+      security: [{ bearerAuth: [] }]
+      summary: Marcar publicação como lida ou pendente
+      parameters: [{ in: path, name: id, required: true, schema: { type: string, format: uuid } }]
+      requestBody: { required: true, content: { application/json: { schema: { type: object, properties: { isRead: { type: boolean } } } } } }
+      responses: { '204': { description: Atualizada } }
+  /v1/publications/{id}/cases/{caseID}:
+    parameters: [{ in: path, name: id, required: true, schema: { type: string, format: uuid } }, { in: path, name: caseID, required: true, schema: { type: string, format: uuid } }]
+    post:
+      security: [{ bearerAuth: [] }]
+      summary: Vincular publicação ao processo
+      responses: { '204': { description: Vinculada } }
+    delete:
+      security: [{ bearerAuth: [] }]
+      summary: Desvincular publicação
+      responses: { '204': { description: Desvinculada } }
+  /v1/suggestions:
+    get:
+      security: [{ bearerAuth: [] }]
+      summary: Listar sugestões com evidência e memória de cálculo
+      responses: { '200': { description: Página de sugestões } }
+  /v1/suggestions/{id}/confirm:
+    post:
+      security: [{ bearerAuth: [] }]
+      summary: Confirmar ou corrigir data sugerida e criar prazo
+      parameters: [{ in: path, name: id, required: true, schema: { type: string, format: uuid } }]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/Deadline' } } } }
+      responses: { '200': { description: Prazo confirmado } }
+  /v1/suggestions/{id}/discard:
+    post:
+      security: [{ bearerAuth: [] }]
+      summary: Descartar sugestão
+      parameters: [{ in: path, name: id, required: true, schema: { type: string, format: uuid } }]
+      responses: { '204': { description: Descartada } }
+  /v1/deadlines:
+    get:
+      security: [{ bearerAuth: [] }]
+      summary: Listar prazos confirmados e manuais
+      responses: { '200': { description: Página de prazos } }
+    post:
+      security: [{ bearerAuth: [] }]
+      summary: Criar prazo manual
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/Deadline' } } } }
+      responses: { '200': { description: Prazo criado } }
+  /v1/deadlines/{id}:
+    parameters: [{ in: path, name: id, required: true, schema: { type: string, format: uuid } }]
+    get:
+      security: [{ bearerAuth: [] }]
+      summary: Consultar prazo
+      responses: { '200': { description: Prazo } }
+    put:
+      security: [{ bearerAuth: [] }]
+      summary: Atualizar prazo e confirmar nova data após revisão
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/Deadline' } } } }
+      responses: { '200': { description: Prazo atualizado } }
+    delete:
+      security: [{ bearerAuth: [] }]
+      summary: Excluir prazo e agendar remoção do evento remoto
+      responses: { '204': { description: Excluído } }
+  /v1/dashboard:
+    get:
+      security: [{ bearerAuth: [] }]
+      summary: Contagens de publicações e prazos
+      responses: { '200': { description: Resumo } }
+  /v1/google/connect:
+    get:
+      security: [{ bearerAuth: [] }]
+      summary: Obter URL de autorização OAuth
+      responses: { '200': { description: authorizationUrl } }
+  /v1/google/callback:
+    get:
+      summary: Callback OAuth protegido por state
+      parameters: [{ in: query, name: state, required: true, schema: { type: string } }, { in: query, name: code, required: true, schema: { type: string } }]
+      responses: { '200': { description: Conta conectada } }
+  /v1/google/status:
+    get:
+      security: [{ bearerAuth: [] }]
+      summary: Consultar conexão e calendário selecionado
+      responses: { '200': { description: Estado } }
+  /v1/google/calendars:
+    get:
+      security: [{ bearerAuth: [] }]
+      summary: Listar calendários da conta conectada
+      responses: { '200': { description: Lista do Google } }
+  /v1/google/calendar:
+    put:
+      security: [{ bearerAuth: [] }]
+      summary: Selecionar calendário editável
+      requestBody: { required: true, content: { application/json: { schema: { type: object, properties: { calendarId: { type: string } } } } } }
+      responses: { '200': { description: Selecionado } }
+  /v1/google/connection:
+    delete:
+      security: [{ bearerAuth: [] }]
+      summary: Parar sincronização futura
+      responses: { '204': { description: Desconectado } }
+  /v1/admin/lawyers:
+    get:
+      security: [{ bearerAuth: [] }]
+      summary: Listar advogados (admin)
+      responses: { '200': { description: Página } }
+  /v1/admin/lawyers/{id}:
+    patch:
+      security: [{ bearerAuth: [] }]
+      summary: Alterar nome, atuação e estado ativo (admin)
+      parameters: [{ in: path, name: id, required: true, schema: { type: string, format: uuid } }]
+      responses: { '204': { description: Atualizado } }
+  /v1/admin/calendars:
+    get:
+      security: [{ bearerAuth: [] }]
+      summary: Listar versões de calendário (admin)
+      responses: { '200': { description: Versões } }
+  /v1/admin/calendars/import:
+    post:
+      security: [{ bearerAuth: [] }]
+      summary: Importar dias de ato oficial como rascunho (admin)
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/CalendarImport' } } } }
+      responses: { '201': { description: Rascunho } }
+  /v1/admin/calendars/{id}/approve:
+    post:
+      security: [{ bearerAuth: [] }]
+      summary: Aprovar versão e marcar prazos afetados para revisão (admin)
+      parameters: [{ in: path, name: id, required: true, schema: { type: string, format: uuid } }]
+      requestBody: { required: true, content: { application/json: { schema: { type: object, required: [verifiedComplete], properties: { verifiedComplete: { type: boolean, enum: [true] } } } } } }
+      responses: { '200': { description: Ativada } }
+  /v1/admin/sync:
+    get:
+      security: [{ bearerAuth: [] }]
+      summary: Última edição e falhas por tribunal (admin)
+      responses: { '200': { description: Estado das fontes } }
