@@ -110,7 +110,7 @@ paths:
       responses: { '204': { description: Revogada } }
   /v1/auth/password-reset/request:
     post:
-      summary: Solicitar token de redefinição por email
+      summary: Solicitar link de redefinição por email
       requestBody: { required: true, content: { application/json: { schema: { type: object, properties: { email: { type: string } } } } } }
       responses: { '202': { description: Aceito sem revelar a existência da conta } }
   /v1/auth/password-reset/confirm:
@@ -233,7 +233,7 @@ paths:
   /v1/dashboard:
     get:
       security: [{ bearerAuth: [] }]
-      summary: Contagens de publicações e prazos
+      summary: Contagens de publicações, prazos e processos ativos
       responses: { '200': { description: Resumo } }
   /v1/google/connect:
     get:
@@ -242,9 +242,9 @@ paths:
       responses: { '200': { description: authorizationUrl } }
   /v1/google/callback:
     get:
-      summary: Callback OAuth protegido por state
-      parameters: [{ in: query, name: state, required: true, schema: { type: string } }, { in: query, name: code, required: true, schema: { type: string } }]
-      responses: { '200': { description: Conta conectada } }
+      summary: Callback OAuth protegido por state e retorno à origem configurada do frontend
+      parameters: [{ in: query, name: state, required: true, schema: { type: string } }, { in: query, name: code, required: false, schema: { type: string } }, { in: query, name: error, required: false, schema: { type: string } }]
+      responses: { '200': { description: Conta conectada quando WEB_APP_URL não está definido }, '303': { description: Redirecionamento para /calendar quando WEB_APP_URL está configurado } }
   /v1/google/status:
     get:
       security: [{ bearerAuth: [] }]

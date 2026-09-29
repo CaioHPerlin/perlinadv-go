@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/mail"
 	"net/smtp"
+	"net/url"
 	"os"
 	"strings"
 	"time"
@@ -149,7 +150,15 @@ func sendReset(email, token string) error {
 		host := strings.Split(addr, ":")[0]
 		auth = smtp.PlainAuth("", u, os.Getenv("SMTP_PASSWORD"), host)
 	}
-	message := fmt.Sprintf("To: %s\r\nSubject: PerlinAdv password reset\r\n\r\nUse POST /v1/auth/password-reset/confirm with token %s within 30 minutes.\r\n", email, token)
+	instructions := fmt.Sprintf("Use POST /v1/auth/password-reset/confirm with token %s within 30 minutes.", token)
+	resetURL, err := frontendURL("/reset-password", url.Values{"token": {token}})
+	if err != nil {
+		return err
+	}
+	if resetURL != "" {
+		instructions = "Redefina sua senha neste link (válido por 30 minutos):\r\n" + resetURL
+	}
+	message := fmt.Sprintf("To: %s\r\nSubject: Redefinição de senha PerlinAdv\r\n\r\n%s\r\n", email, instructions)
 	return smtp.SendMail(addr, auth, from, []string{email}, []byte(message))
 }
 func (s *Server) requestReset(w http.ResponseWriter, r *http.Request) {

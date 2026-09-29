@@ -79,6 +79,10 @@ func TestOwnedCRUDIntegration(t *testing.T) {
 		t.Fatalf("create case: %d %v", code, created)
 	}
 	id := created["id"].(string)
+	code, dashboard := call("GET", "/v1/dashboard", token1, nil)
+	if code != 200 || dashboard["activeCases"] != float64(1) {
+		t.Fatalf("dashboard active cases: %d %v", code, dashboard)
+	}
 	code, _ = call("GET", "/v1/cases/"+id, token2, nil)
 	if code != 404 {
 		t.Fatalf("cross-user case access: %d", code)

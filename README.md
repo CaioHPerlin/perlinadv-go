@@ -63,7 +63,7 @@ Em 27/09/2026, a [franquia publicada](https://developers.cloudflare.com/workers-
 
 ## Integração Google
 
-Configure um cliente OAuth Web no Google Cloud com callback `GOOGLE_REDIRECT_URI`, por exemplo `http://localhost:3000/v1/google/callback` em desenvolvimento. Defina `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` e uma chave AES de 32 bytes em base64 em `GOOGLE_TOKEN_KEY` (`openssl rand -base64 32`). O fluxo pede acesso offline e os escopos `calendar.events` e `calendar.calendarlist.readonly`. O refresh token é cifrado no banco. Desconectar interrompe novas sincronizações; eventos já criados permanecem no Google até serem excluídos ou geridos pelo usuário.
+Configure um cliente OAuth Web no Google Cloud com callback `GOOGLE_REDIRECT_URI`, por exemplo `http://localhost:3000/v1/google/callback` em desenvolvimento. Defina `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` e uma chave AES de 32 bytes em base64 em `GOOGLE_TOKEN_KEY` (`openssl rand -base64 32`). Configure `WEB_APP_URL` com a origem fixa do frontend (`http://localhost:5173` no Vite ou `http://localhost:4173` no Compose); após o OAuth, o callback retorna para `/calendar` com o resultado da conexão. Essa origem não pode ser escolhida pela requisição. Com `WEB_APP_URL` definido, o e-mail de recuperação inclui um link para `/reset-password?token=...`; sem ele, as instruções legadas por token continuam disponíveis. O fluxo pede acesso offline e os escopos `calendar.events` e `calendar.calendarlist.readonly`. O refresh token é cifrado no banco. Desconectar interrompe novas sincronizações; eventos já criados permanecem no Google até serem excluídos ou geridos pelo usuário.
 
 ## Testes
 

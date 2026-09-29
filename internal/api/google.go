@@ -10,6 +10,27 @@ import (
 	"github.com/caiohperlin/perlinadv/internal/google"
 )
 
+func (s *Server) googleCallbackResult(w http.ResponseWriter, r *http.Request, connected bool, status int, message string) {
+	result := "error"
+	if connected {
+		result = "connected"
+	}
+	target, err := frontendURL("/calendar", url.Values{"google": {result}})
+	if err != nil {
+		fail(w, 500, "frontend URL misconfigured")
+		return
+	}
+	if target != "" {
+		http.Redirect(w, r, target, http.StatusSeeOther)
+		return
+	}
+	if connected {
+		write(w, 200, map[string]string{"status": "connected", "next": "GET /v1/google/calendars then PUT /v1/google/calendar"})
+		return
+	}
+	fail(w, status, message)
+}
+
 func (s *Server) googleConnect(w http.ResponseWriter, r *http.Request) {
 	c, err := google.New()
 	if err != nil || !c.Configured() {
@@ -31,51 +52,51 @@ func (s *Server) googleConnect(w http.ResponseWriter, r *http.Request) {
 func (s *Server) googleCallback(w http.ResponseWriter, r *http.Request) {
 	state, code := r.URL.Query().Get("state"), r.URL.Query().Get("code")
 	if state == "" || code == "" {
-		fail(w, 400, "missing OAuth state or code")
+		s.googleCallbackResult(w, r, false, 400, "missing OAuth state or code")
 		return
 	}
 	c, err := google.New()
 	if err != nil || !c.Configured() {
-		fail(w, 503, "Google OAuth not configured")
+		s.googleCallbackResult(w, r, false, 503, "Google OAuth not configured")
 		return
 	}
 	tx, err := s.DB.BeginTx(r.Context(), nil)
 	if err != nil {
-		fail(w, 500, "database error")
+		s.googleCallbackResult(w, r, false, 500, "database error")
 		return
 	}
 	defer tx.Rollback()
 	var uid string
 	err = tx.QueryRowContext(r.Context(), `DELETE FROM google_oauth_states WHERE state_hash=$1 AND expires_at>now() RETURNING user_id::text`, hash(state)).Scan(&uid)
 	if err != nil {
-		fail(w, 400, "invalid OAuth state")
+		s.googleCallbackResult(w, r, false, 400, "invalid OAuth state")
 		return
 	}
 	t, err := c.Exchange(r.Context(), code)
 	if err != nil || t.RefreshToken == "" {
-		fail(w, 502, "Google did not provide offline access")
+		s.googleCallbackResult(w, r, false, 502, "Google did not provide offline access")
 		return
 	}
 	cipher, err := c.Encrypt(t.RefreshToken)
 	if err != nil {
-		fail(w, 500, "encryption error")
+		s.googleCallbackResult(w, r, false, 500, "encryption error")
 		return
 	}
 	_, err = tx.ExecContext(r.Context(), `INSERT INTO google_connections(user_id,refresh_token_cipher) VALUES($1,$2) ON CONFLICT(user_id) DO UPDATE SET refresh_token_cipher=excluded.refresh_token_cipher,disabled_at=NULL,connected_at=now()`, uid, cipher)
 	if err != nil {
-		fail(w, 500, "database error")
+		s.googleCallbackResult(w, r, false, 500, "database error")
 		return
 	}
 	_, err = tx.ExecContext(r.Context(), `INSERT INTO google_jobs(user_id,deadline_id,operation) SELECT d.user_id,d.id,'UPSERT' FROM deadlines d JOIN google_connections gc ON gc.user_id=d.user_id WHERE d.user_id=$1 AND d.status='ACTIVE' AND d.needs_review=FALSE AND gc.calendar_id<>''`, uid)
 	if err != nil {
-		fail(w, 500, "database error")
+		s.googleCallbackResult(w, r, false, 500, "database error")
 		return
 	}
 	if err = tx.Commit(); err != nil {
-		fail(w, 500, "database error")
+		s.googleCallbackResult(w, r, false, 500, "database error")
 		return
 	}
-	write(w, 200, map[string]string{"status": "connected", "next": "GET /v1/google/calendars then PUT /v1/google/calendar"})
+	s.googleCallbackResult(w, r, true, 0, "")
 }
 func (s *Server) googleStatus(w http.ResponseWriter, r *http.Request) {
 	var calendar string

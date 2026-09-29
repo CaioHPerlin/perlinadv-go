@@ -93,9 +93,10 @@ func (s *Server) unlinkPublication(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(204)
 }
 func (s *Server) dashboard(w http.ResponseWriter, r *http.Request) {
-	var unread, pending, upcoming int
+	var unread, pending, upcoming, activeCases int
 	_ = s.DB.QueryRowContext(r.Context(), `SELECT count(*) FROM user_publications WHERE user_id=$1 AND NOT is_read`, user(r).ID).Scan(&unread)
 	_ = s.DB.QueryRowContext(r.Context(), `SELECT count(*) FROM deadline_suggestions WHERE user_id=$1 AND status IN ('PENDING','NEEDS_REVIEW')`, user(r).ID).Scan(&pending)
 	_ = s.DB.QueryRowContext(r.Context(), `SELECT count(*) FROM deadlines WHERE user_id=$1 AND status='ACTIVE' AND due_on BETWEEN current_date AND current_date+7`, user(r).ID).Scan(&upcoming)
-	write(w, 200, map[string]int{"unreadPublications": unread, "pendingSuggestions": pending, "upcomingDeadlines": upcoming})
+	_ = s.DB.QueryRowContext(r.Context(), `SELECT count(*) FROM cases WHERE user_id=$1 AND status NOT IN ('CLOSED','ARCHIVED')`, user(r).ID).Scan(&activeCases)
+	write(w, 200, map[string]int{"unreadPublications": unread, "pendingSuggestions": pending, "upcomingDeadlines": upcoming, "activeCases": activeCases})
 }

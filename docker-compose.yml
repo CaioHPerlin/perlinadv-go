@@ -33,6 +33,7 @@ services:
       GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET:-}
       GOOGLE_REDIRECT_URI: ${GOOGLE_REDIRECT_URI:-}
       GOOGLE_TOKEN_KEY: ${GOOGLE_TOKEN_KEY:-}
+      WEB_APP_URL: ${WEB_APP_URL:-http://localhost:5173}
     ports:
       - "127.0.0.1:3000:3000"
     depends_on:
