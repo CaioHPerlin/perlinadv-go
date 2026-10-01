@@ -44,21 +44,28 @@ components:
       required: [title, dueOn]
       properties:
         caseId: { type: string, format: uuid }
+        publicationId: { type: string, format: uuid, description: Publicação própria vinculada ao prazo manual }
         title: { type: string }
         description: { type: string }
         dueOn: { type: string, format: date }
         status: { type: string, enum: [ACTIVE, COMPLETED, CANCELED] }
         llmAssisted: { type: boolean, readOnly: true, description: Sugestão original extraída por LLM; falso para prazo manual }
+        googleSyncStatus: { type: string, enum: ['', PENDING, DONE, FAILED], readOnly: true, description: Estado assíncrono do evento confirmado no Google Agenda }
     Publication:
       type: object
       properties:
         id: { type: string, format: uuid }
-        analysisStatus: { type: string }
-        llmAssisted: { type: boolean, description: O fallback LLM foi chamado para analisar esta publicação, mesmo se falhou }
+        isRead: { type: boolean }
+        contentText: { type: string, description: Texto integral da publicação }
+        availableOn: { type: string, format: date, description: Data de disponibilização DJEN }
+        analysisStatus: { type: string, enum: [PENDING, RUNNING, RETRY, DONE, FAILED] }
+        llmAssisted: { type: boolean, nullable: true, description: O fallback LLM foi chamado; nulo enquanto a análise ainda está em processamento }
     Suggestion:
       type: object
       properties:
         id: { type: string, format: uuid }
+        publicationId: { type: string, format: uuid }
+        availableOn: { type: string, format: date, description: Data de disponibilização DJEN }
         method: { type: string, enum: [RULE, LLM] }
         llmAssisted: { type: boolean, description: A sugestão foi extraída por LLM }
     CalendarImport:
@@ -162,7 +169,7 @@ paths:
     get:
       security: [{ bearerAuth: [] }]
       summary: Listar e buscar publicações próprias
-      parameters: [{ in: query, name: q, schema: { type: string } }, { in: query, name: tribunal, schema: { type: string } }, { in: query, name: page, schema: { type: integer } }]
+      parameters: [{ in: query, name: q, schema: { type: string } }, { in: query, name: tribunal, schema: { type: string } }, { in: query, name: read, schema: { type: string, enum: ['true', 'false'] }, description: Filtra antes da paginação }, { in: query, name: page, schema: { type: integer } }]
       responses: { '200': { description: Página de publicações } }
   /v1/publications/{id}:
     parameters: [{ in: path, name: id, required: true, schema: { type: string, format: uuid } }]
@@ -170,6 +177,20 @@ paths:
       security: [{ bearerAuth: [] }]
       summary: Texto integral e metadados da publicação
       responses: { '200': { description: Publicação } }
+  /v1/publications/{id}/open:
+    post:
+      security: [{ bearerAuth: [] }]
+      summary: Marcar publicação como lida e enfileirar análise idempotentemente
+      description: Retorna isRead, analysisStatus e llmAssisted; llmAssisted é nulo até haver proveniência disponível. A extração ocorre em background e não bloqueia a resposta.
+      parameters: [{ in: path, name: id, required: true, schema: { type: string, format: uuid } }]
+      responses: { '202': { description: Publicação marcada como lida e análise enfileirada ou já concluída }, '404': { description: Publicação não pertence ao advogado } }
+  /v1/publications/{id}/analyze:
+    post:
+      security: [{ bearerAuth: [] }]
+      summary: Solicitar nova tentativa de análise após falha
+      description: Enfileira a publicação sem executar o LLM na requisição. Análises concluídas são preservadas.
+      parameters: [{ in: path, name: id, required: true, schema: { type: string, format: uuid } }]
+      responses: { '202': { description: Estado da análise }, '404': { description: Publicação não pertence ao advogado }, '409': { description: A publicação deve ser aberta antes de uma nova tentativa } }
   /v1/publications/{id}/read:
     patch:
       security: [{ bearerAuth: [] }]
@@ -191,6 +212,11 @@ paths:
     get:
       security: [{ bearerAuth: [] }]
       summary: Listar sugestões com evidência e memória de cálculo
+      parameters:
+        - in: query
+          name: publicationId
+          schema: { type: string, format: uuid }
+          description: Restringe às sugestões da publicação
       responses: { '200': { description: Página de sugestões } }
   /v1/suggestions/{id}/confirm:
     post:
@@ -212,7 +238,7 @@ paths:
       responses: { '200': { description: Página de prazos } }
     post:
       security: [{ bearerAuth: [] }]
-      summary: Criar prazo manual
+      summary: Criar prazo manual, opcionalmente vinculado a uma publicação própria via publicationId
       requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/Deadline' } } } }
       responses: { '200': { description: Prazo criado } }
   /v1/deadlines/{id}:

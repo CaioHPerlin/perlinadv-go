@@ -83,6 +83,8 @@ func (s *Server) routes() {
 				r.Delete("/cases/{id}", s.deleteCase)
 				r.Get("/publications", s.listPublications)
 				r.Get("/publications/{id}", s.getPublication)
+				r.Post("/publications/{id}/open", s.openPublication)
+				r.Post("/publications/{id}/analyze", s.analyzePublication)
 				r.Patch("/publications/{id}/read", s.setPublicationRead)
 				r.Post("/publications/{id}/cases/{caseID}", s.linkPublication)
 				r.Delete("/publications/{id}/cases/{caseID}", s.unlinkPublication)

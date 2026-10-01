@@ -29,23 +29,25 @@ func (q *Queries) CaseOwnedExists(ctx context.Context, arg CaseOwnedExistsParams
 }
 
 const createDeadline = `-- name: CreateDeadline :one
-INSERT INTO deadlines(user_id,case_id,title,description,due_on,status)
-VALUES($1,$2,$3,$4,$5,$6) RETURNING id
+INSERT INTO deadlines(user_id,case_id,publication_id,title,description,due_on,status)
+VALUES($1,$2,$3,$4,$5,$6,$7) RETURNING id
 `
 
 type CreateDeadlineParams struct {
-	UserID      uuid.UUID     `json:"user_id"`
-	CaseID      uuid.NullUUID `json:"case_id"`
-	Title       string        `json:"title"`
-	Description string        `json:"description"`
-	DueOn       time.Time     `json:"due_on"`
-	Status      string        `json:"status"`
+	UserID        uuid.UUID     `json:"user_id"`
+	CaseID        uuid.NullUUID `json:"case_id"`
+	PublicationID uuid.NullUUID `json:"publication_id"`
+	Title         string        `json:"title"`
+	Description   string        `json:"description"`
+	DueOn         time.Time     `json:"due_on"`
+	Status        string        `json:"status"`
 }
 
 func (q *Queries) CreateDeadline(ctx context.Context, arg CreateDeadlineParams) (uuid.UUID, error) {
 	row := q.db.QueryRowContext(ctx, createDeadline,
 		arg.UserID,
 		arg.CaseID,
+		arg.PublicationID,
 		arg.Title,
 		arg.Description,
 		arg.DueOn,
@@ -75,7 +77,9 @@ func (q *Queries) DeleteDeadline(ctx context.Context, arg DeleteDeadlineParams) 
 
 const getDeadline = `-- name: GetDeadline :one
 SELECT d.id,d.case_id,d.publication_id,d.suggestion_id,d.title,d.description,d.due_on,d.status,d.needs_review,
-  EXISTS(SELECT 1 FROM deadline_suggestions ds WHERE ds.id=d.suggestion_id AND ds.method='LLM') AS llm_assisted
+  EXISTS(SELECT 1 FROM deadline_suggestions ds WHERE ds.id=d.suggestion_id AND ds.method='LLM') AS llm_assisted,
+  coalesce((SELECT gj.status FROM google_jobs gj WHERE gj.deadline_id=d.id AND gj.operation='UPSERT' ORDER BY gj.created_at DESC LIMIT 1),
+    CASE WHEN EXISTS(SELECT 1 FROM google_events ge WHERE ge.deadline_id=d.id) THEN 'DONE' ELSE '' END)::text AS google_sync_status
 FROM deadlines d WHERE d.id=$1 AND d.user_id=$2
 `
 
@@ -85,16 +89,17 @@ type GetDeadlineParams struct {
 }
 
 type GetDeadlineRow struct {
-	ID            uuid.UUID     `json:"id"`
-	CaseID        uuid.NullUUID `json:"case_id"`
-	PublicationID uuid.NullUUID `json:"publication_id"`
-	SuggestionID  uuid.NullUUID `json:"suggestion_id"`
-	Title         string        `json:"title"`
-	Description   string        `json:"description"`
-	DueOn         time.Time     `json:"due_on"`
-	Status        string        `json:"status"`
-	NeedsReview   bool          `json:"needs_review"`
-	LlmAssisted   bool          `json:"llm_assisted"`
+	ID               uuid.UUID     `json:"id"`
+	CaseID           uuid.NullUUID `json:"case_id"`
+	PublicationID    uuid.NullUUID `json:"publication_id"`
+	SuggestionID     uuid.NullUUID `json:"suggestion_id"`
+	Title            string        `json:"title"`
+	Description      string        `json:"description"`
+	DueOn            time.Time     `json:"due_on"`
+	Status           string        `json:"status"`
+	NeedsReview      bool          `json:"needs_review"`
+	LlmAssisted      bool          `json:"llm_assisted"`
+	GoogleSyncStatus string        `json:"google_sync_status"`
 }
 
 func (q *Queries) GetDeadline(ctx context.Context, arg GetDeadlineParams) (GetDeadlineRow, error) {
@@ -111,13 +116,16 @@ func (q *Queries) GetDeadline(ctx context.Context, arg GetDeadlineParams) (GetDe
 		&i.Status,
 		&i.NeedsReview,
 		&i.LlmAssisted,
+		&i.GoogleSyncStatus,
 	)
 	return i, err
 }
 
 const listDeadlines = `-- name: ListDeadlines :many
 SELECT d.id,d.case_id,d.publication_id,d.suggestion_id,d.title,d.description,d.due_on,d.status,d.needs_review,
-  EXISTS(SELECT 1 FROM deadline_suggestions ds WHERE ds.id=d.suggestion_id AND ds.method='LLM') AS llm_assisted
+  EXISTS(SELECT 1 FROM deadline_suggestions ds WHERE ds.id=d.suggestion_id AND ds.method='LLM') AS llm_assisted,
+  coalesce((SELECT gj.status FROM google_jobs gj WHERE gj.deadline_id=d.id AND gj.operation='UPSERT' ORDER BY gj.created_at DESC LIMIT 1),
+    CASE WHEN EXISTS(SELECT 1 FROM google_events ge WHERE ge.deadline_id=d.id) THEN 'DONE' ELSE '' END)::text AS google_sync_status
 FROM deadlines d WHERE d.user_id=$1 ORDER BY d.due_on ASC LIMIT $2 OFFSET $3
 `
 
@@ -128,16 +136,17 @@ type ListDeadlinesParams struct {
 }
 
 type ListDeadlinesRow struct {
-	ID            uuid.UUID     `json:"id"`
-	CaseID        uuid.NullUUID `json:"case_id"`
-	PublicationID uuid.NullUUID `json:"publication_id"`
-	SuggestionID  uuid.NullUUID `json:"suggestion_id"`
-	Title         string        `json:"title"`
-	Description   string        `json:"description"`
-	DueOn         time.Time     `json:"due_on"`
-	Status        string        `json:"status"`
-	NeedsReview   bool          `json:"needs_review"`
-	LlmAssisted   bool          `json:"llm_assisted"`
+	ID               uuid.UUID     `json:"id"`
+	CaseID           uuid.NullUUID `json:"case_id"`
+	PublicationID    uuid.NullUUID `json:"publication_id"`
+	SuggestionID     uuid.NullUUID `json:"suggestion_id"`
+	Title            string        `json:"title"`
+	Description      string        `json:"description"`
+	DueOn            time.Time     `json:"due_on"`
+	Status           string        `json:"status"`
+	NeedsReview      bool          `json:"needs_review"`
+	LlmAssisted      bool          `json:"llm_assisted"`
+	GoogleSyncStatus string        `json:"google_sync_status"`
 }
 
 func (q *Queries) ListDeadlines(ctx context.Context, arg ListDeadlinesParams) ([]ListDeadlinesRow, error) {
@@ -160,6 +169,7 @@ func (q *Queries) ListDeadlines(ctx context.Context, arg ListDeadlinesParams) ([
 			&i.Status,
 			&i.NeedsReview,
 			&i.LlmAssisted,
+			&i.GoogleSyncStatus,
 		); err != nil {
 			return nil, err
 		}

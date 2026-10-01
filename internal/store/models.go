@@ -212,11 +212,14 @@ type User struct {
 }
 
 type UserPublication struct {
-	UserID           uuid.UUID `json:"user_id"`
-	PublicationID    uuid.UUID `json:"publication_id"`
-	IsRead           bool      `json:"is_read"`
-	AnalysisStatus   string    `json:"analysis_status"`
-	AnalysisAttempts int32     `json:"analysis_attempts"`
-	CreatedAt        time.Time `json:"created_at"`
-	LlmAssisted      bool      `json:"llm_assisted"`
+	UserID                uuid.UUID    `json:"user_id"`
+	PublicationID         uuid.UUID    `json:"publication_id"`
+	IsRead                bool         `json:"is_read"`
+	AnalysisStatus        string       `json:"analysis_status"`
+	AnalysisAttempts      int32        `json:"analysis_attempts"`
+	CreatedAt             time.Time    `json:"created_at"`
+	LlmAssisted           bool         `json:"llm_assisted"`
+	AnalysisRequestedAt   sql.NullTime `json:"analysis_requested_at"`
+	AnalysisStartedAt     sql.NullTime `json:"analysis_started_at"`
+	AnalysisNextAttemptAt sql.NullTime `json:"analysis_next_attempt_at"`
 }

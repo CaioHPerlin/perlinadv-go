@@ -26,6 +26,52 @@ func (failedProvider) Extract(context.Context, string) ([]extract.Candidate, err
 	return nil, errors.New("provider quota exhausted")
 }
 
+type countingProvider struct{ calls int }
+
+func (p *countingProvider) Extract(context.Context, string) ([]extract.Candidate, error) {
+	p.calls++
+	return nil, nil
+}
+
+func TestNoEvidenceProducesNoDeadlineSuggestionIntegration(t *testing.T) {
+	dsn := os.Getenv("DATABASE_URL")
+	if dsn == "" {
+		t.Skip("DATABASE_URL not set")
+	}
+	db, err := sql.Open("pgx", dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	suffix := fmt.Sprint(time.Now().UnixNano())
+	email, source := "empty-"+suffix+"@example.invalid", "TEST:EMPTY:"+suffix
+	var userID, publicationID string
+	if err = db.QueryRow(`INSERT INTO users(name,email,password_hash,llm_consent) VALUES('Test',$1,'unused',TRUE) RETURNING id::text`, email).Scan(&userID); err != nil {
+		t.Fatal(err)
+	}
+	defer db.Exec(`DELETE FROM users WHERE id=$1`, userID)
+	if err = db.QueryRow(`INSERT INTO publications(source_id,source_hash,tribunal,content_text,available_on) VALUES($1,'hash','TJMS','Publicação sem prazo processual.','2026-09-04') RETURNING id::text`, source).Scan(&publicationID); err != nil {
+		t.Fatal(err)
+	}
+	defer db.Exec(`DELETE FROM publications WHERE id=$1`, publicationID)
+	if _, err = db.Exec(`INSERT INTO user_publications(user_id,publication_id,is_read,analysis_requested_at) VALUES($1,$2,TRUE,now())`, userID, publicationID); err != nil {
+		t.Fatal(err)
+	}
+	provider := &countingProvider{}
+	if err = (Worker{DB: db, LLM: provider}).analyze(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	var status string
+	var assisted bool
+	var suggestions int
+	if err = db.QueryRow(`SELECT analysis_status,llm_assisted,(SELECT count(*) FROM deadline_suggestions WHERE user_id=$1 AND publication_id=$2) FROM user_publications WHERE user_id=$1 AND publication_id=$2`, userID, publicationID).Scan(&status, &assisted, &suggestions); err != nil {
+		t.Fatal(err)
+	}
+	if status != "DONE" || !assisted || suggestions != 0 || provider.calls != 1 {
+		t.Fatalf("status=%s llm_assisted=%v suggestions=%d provider_calls=%d", status, assisted, suggestions, provider.calls)
+	}
+}
+
 func TestExternalFailurePreservesPublicationIntegration(t *testing.T) {
 	dsn := os.Getenv("DATABASE_URL")
 	if dsn == "" {
@@ -51,10 +97,24 @@ func TestExternalFailurePreservesPublicationIntegration(t *testing.T) {
 		t.Fatal(err)
 	}
 	worker := Worker{DB: db, LLM: failedProvider{}}
+	if err = worker.analyze(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	var beforeOpen string
+	if err = db.QueryRow(`SELECT analysis_status FROM user_publications WHERE user_id=$1 AND publication_id=$2`, userID, publicationID).Scan(&beforeOpen); err != nil {
+		t.Fatal(err)
+	}
+	if beforeOpen != "PENDING" {
+		t.Fatalf("unopened publication was analyzed: %s", beforeOpen)
+	}
+	if _, err = db.Exec(`UPDATE user_publications SET is_read=TRUE,analysis_requested_at=now() WHERE user_id=$1 AND publication_id=$2`, userID, publicationID); err != nil {
+		t.Fatal(err)
+	}
 	for range 3 {
 		if err = worker.analyze(context.Background()); err != nil {
 			t.Fatal(err)
 		}
+		_, _ = db.Exec(`UPDATE user_publications SET analysis_next_attempt_at=now() WHERE user_id=$1 AND publication_id=$2`, userID, publicationID)
 	}
 	var status string
 	var llmAssisted bool
@@ -143,6 +203,9 @@ func TestEditionToCalculatedSuggestionIntegration(t *testing.T) {
 	base = server.URL
 	worker := Worker{DB: db, HTTP: server.Client(), BaseURL: base}
 	if err = worker.ingestEdition(ctx, "TJMS", "2026-09-04"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = db.Exec(`UPDATE user_publications SET is_read=TRUE,analysis_requested_at=now() WHERE user_id=$1 AND publication_id=(SELECT id FROM publications WHERE source_id=$2)`, userID, "DJEN:"+sourceID); err != nil {
 		t.Fatal(err)
 	}
 	if err = worker.analyze(ctx); err != nil {

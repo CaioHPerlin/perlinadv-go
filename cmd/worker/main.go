@@ -3,9 +3,10 @@ package main
 import (
 	"context"
 	"flag"
-	"github.com/caiohperlin/perlinadv/internal/worker"
 	"log"
 	"time"
+
+	"github.com/caiohperlin/perlinadv/internal/worker"
 )
 
 func main() {
@@ -30,16 +31,36 @@ func main() {
 		log.Printf("replayed %s %s", *tribunal, *date)
 		return
 	}
-	for {
+	runCollection := func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 50*time.Minute)
-		err = w.RunOnce(ctx)
+		runErr := w.RunOnce(ctx)
 		cancel()
-		if err != nil {
-			log.Printf("worker run: %v", err)
+		if runErr != nil {
+			log.Printf("worker run: %v", runErr)
 		}
-		if *once {
-			return
+	}
+	if *once {
+		runCollection()
+		return
+	}
+	go func() {
+		runCollection()
+		ticker := time.NewTicker(time.Hour)
+		defer ticker.Stop()
+		for range ticker.C {
+			runCollection()
 		}
-		time.Sleep(time.Hour)
+	}()
+	ticker := time.NewTicker(5 * time.Second)
+	defer ticker.Stop()
+	for range ticker.C {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		if err := w.ProcessAnalysis(ctx); err != nil {
+			log.Printf("analysis queue: %v", err)
+		}
+		if err := w.SyncGoogle(ctx); err != nil {
+			log.Printf("Google sync: %v", err)
+		}
+		cancel()
 	}
 }

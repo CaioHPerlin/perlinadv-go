@@ -12,11 +12,12 @@ import (
 )
 
 type deadlineBody struct {
-	CaseID      string `json:"caseId"`
-	Title       string `json:"title"`
-	Description string `json:"description"`
-	DueOn       string `json:"dueOn"`
-	Status      string `json:"status"`
+	CaseID        string `json:"caseId"`
+	PublicationID string `json:"publicationId"`
+	Title         string `json:"title"`
+	Description   string `json:"description"`
+	DueOn         string `json:"dueOn"`
+	Status        string `json:"status"`
 }
 
 func validDeadline(b *deadlineBody) bool {
@@ -33,8 +34,8 @@ func optionalID(id uuid.NullUUID) string {
 	}
 	return ""
 }
-func deadlineValue(id uuid.UUID, caseID, publicationID, suggestionID uuid.NullUUID, title, description string, due time.Time, status string, review, llmAssisted bool) map[string]any {
-	return map[string]any{"id": id.String(), "caseId": optionalID(caseID), "publicationId": optionalID(publicationID), "suggestionId": optionalID(suggestionID), "title": title, "description": description, "dueOn": due.Format("2006-01-02"), "status": status, "needsReview": review, "llmAssisted": llmAssisted}
+func deadlineValue(id uuid.UUID, caseID, publicationID, suggestionID uuid.NullUUID, title, description string, due time.Time, status string, review, llmAssisted bool, googleSyncStatus string) map[string]any {
+	return map[string]any{"id": id.String(), "caseId": optionalID(caseID), "publicationId": optionalID(publicationID), "suggestionId": optionalID(suggestionID), "title": title, "description": description, "dueOn": due.Format("2006-01-02"), "status": status, "needsReview": review, "llmAssisted": llmAssisted, "googleSyncStatus": googleSyncStatus}
 }
 func (s *Server) ownedCaseID(r *http.Request, raw string) (uuid.NullUUID, bool) {
 	if raw == "" {
@@ -58,7 +59,7 @@ func (s *Server) listDeadlines(w http.ResponseWriter, r *http.Request) {
 	}
 	items := []map[string]any{}
 	for _, v := range rows {
-		items = append(items, deadlineValue(v.ID, v.CaseID, v.PublicationID, v.SuggestionID, v.Title, v.Description, v.DueOn, v.Status, v.NeedsReview, v.LlmAssisted))
+		items = append(items, deadlineValue(v.ID, v.CaseID, v.PublicationID, v.SuggestionID, v.Title, v.Description, v.DueOn, v.Status, v.NeedsReview, v.LlmAssisted, v.GoogleSyncStatus))
 	}
 	write(w, 200, map[string]any{"items": items, "page": p})
 }
@@ -78,7 +79,7 @@ func (s *Server) getDeadline(w http.ResponseWriter, r *http.Request) {
 		fail(w, 400, "invalid deadline id")
 		return
 	}
-	write(w, 200, deadlineValue(v.ID, v.CaseID, v.PublicationID, v.SuggestionID, v.Title, v.Description, v.DueOn, v.Status, v.NeedsReview, v.LlmAssisted))
+	write(w, 200, deadlineValue(v.ID, v.CaseID, v.PublicationID, v.SuggestionID, v.Title, v.Description, v.DueOn, v.Status, v.NeedsReview, v.LlmAssisted, v.GoogleSyncStatus))
 }
 func (s *Server) createDeadline(w http.ResponseWriter, r *http.Request) {
 	var b deadlineBody
@@ -91,16 +92,44 @@ func (s *Server) createDeadline(w http.ResponseWriter, r *http.Request) {
 		fail(w, 404, "case not found")
 		return
 	}
+	var publicationID uuid.NullUUID
+	if b.PublicationID != "" {
+		pid, err := uuid.Parse(b.PublicationID)
+		if err != nil {
+			fail(w, 400, "invalid publication id")
+			return
+		}
+		var exists bool
+		if err := s.DB.QueryRowContext(r.Context(), `SELECT EXISTS(SELECT 1 FROM user_publications WHERE user_id=$1 AND publication_id=$2)`, user(r).ID, pid).Scan(&exists); err != nil || !exists {
+			fail(w, 404, "publication not found")
+			return
+		}
+		publicationID = uuid.NullUUID{UUID: pid, Valid: true}
+	}
 	uid, _ := uuid.Parse(user(r).ID)
 	due, _ := time.Parse("2006-01-02", b.DueOn)
-	created, err := store.New(s.DB).CreateDeadline(r.Context(), store.CreateDeadlineParams{UserID: uid, CaseID: caseID, Title: b.Title, Description: b.Description, DueOn: due, Status: b.Status})
+	tx, err := s.DB.BeginTx(r.Context(), nil)
+	if err != nil {
+		fail(w, 500, "database error")
+		return
+	}
+	defer tx.Rollback()
+	created, err := store.New(tx).CreateDeadline(r.Context(), store.CreateDeadlineParams{UserID: uid, CaseID: caseID, PublicationID: publicationID, Title: b.Title, Description: b.Description, DueOn: due, Status: b.Status})
 	if err != nil {
 		fail(w, 400, "invalid deadline")
 		return
 	}
 	id := created.String()
 	if b.Status == "ACTIVE" {
-		s.queueGoogle(r, id, "UPSERT", "", "")
+		_, err = tx.ExecContext(r.Context(), `INSERT INTO google_jobs(user_id,deadline_id,operation) SELECT $1,$2,'UPSERT' WHERE EXISTS(SELECT 1 FROM google_connections WHERE user_id=$1 AND disabled_at IS NULL AND calendar_id<>'')`, uid, id)
+		if err != nil {
+			fail(w, 500, "could not queue Google Calendar sync")
+			return
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		fail(w, 500, "database error")
+		return
 	}
 	s.getDeadline(w, withParam(r, "id", id))
 }
@@ -160,7 +189,14 @@ func (s *Server) deleteDeadline(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) listSuggestions(w http.ResponseWriter, r *http.Request) {
 	p, l := page(r)
-	rows, err := s.DB.QueryContext(r.Context(), `SELECT id::text,publication_id::text,action,evidence,coalesce(duration_days,0),unit,method,rule_version,status,coalesce(suggested_due_on::text,''),coalesce(publication_on::text,''),coalesce(first_counted_on::text,''),calculation FROM deadline_suggestions WHERE user_id=$1 ORDER BY created_at DESC LIMIT $2 OFFSET $3`, user(r).ID, l, (p-1)*l)
+	publicationID := r.URL.Query().Get("publicationId")
+	if publicationID != "" {
+		if _, err := uuid.Parse(publicationID); err != nil {
+			fail(w, 400, "invalid publication id")
+			return
+		}
+	}
+	rows, err := s.DB.QueryContext(r.Context(), `SELECT ds.id::text,ds.publication_id::text,ds.action,ds.evidence,coalesce(ds.duration_days,0),ds.unit,ds.method,ds.rule_version,ds.status,coalesce(ds.suggested_due_on::text,''),p.available_on::text,coalesce(ds.publication_on::text,''),coalesce(ds.first_counted_on::text,''),ds.calculation FROM deadline_suggestions ds JOIN publications p ON p.id=ds.publication_id WHERE ds.user_id=$1 AND ($2='' OR ds.publication_id=nullif($2,'')::uuid) ORDER BY ds.created_at DESC LIMIT $3 OFFSET $4`, user(r).ID, publicationID, l, (p-1)*l)
 	if err != nil {
 		fail(w, 500, "database error")
 		return
@@ -168,13 +204,13 @@ func (s *Server) listSuggestions(w http.ResponseWriter, r *http.Request) {
 	defer rows.Close()
 	items := []map[string]any{}
 	for rows.Next() {
-		var id, pid, action, evidence, unit, method, version, status, due, pub, first string
+		var id, pid, action, evidence, unit, method, version, status, due, available, pub, first string
 		var days int
 		var calc []byte
-		if rows.Scan(&id, &pid, &action, &evidence, &days, &unit, &method, &version, &status, &due, &pub, &first, &calc) == nil {
+		if rows.Scan(&id, &pid, &action, &evidence, &days, &unit, &method, &version, &status, &due, &available, &pub, &first, &calc) == nil {
 			var audit any
 			_ = json.Unmarshal(calc, &audit)
-			items = append(items, map[string]any{"id": id, "publicationId": pid, "action": action, "evidence": evidence, "durationDays": days, "unit": unit, "method": method, "llmAssisted": method == "LLM", "ruleVersion": version, "status": status, "suggestedDueOn": due, "publicationOn": pub, "firstCountedOn": first, "calculation": audit})
+			items = append(items, map[string]any{"id": id, "publicationId": pid, "action": action, "evidence": evidence, "durationDays": days, "unit": unit, "method": method, "llmAssisted": method == "LLM", "ruleVersion": version, "status": status, "suggestedDueOn": due, "availableOn": available, "publicationOn": pub, "firstCountedOn": first, "calculation": audit})
 		}
 	}
 	write(w, 200, map[string]any{"items": items, "page": p})

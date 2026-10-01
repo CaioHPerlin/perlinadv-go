@@ -117,12 +117,6 @@ func (w Worker) RunOnce(ctx context.Context) error {
 			}
 		}
 	}
-	if err := w.analyze(ctx); err != nil {
-		log.Printf("analysis: %v", err)
-	}
-	if err := w.SyncGoogle(ctx); err != nil {
-		log.Printf("Google sync: %v", err)
-	}
 	_, _ = w.DB.ExecContext(ctx, `DELETE FROM recent_publication_matches WHERE expires_at<now()`)
 	_, _ = w.DB.ExecContext(ctx, `DELETE FROM publications p WHERE NOT EXISTS(SELECT 1 FROM user_publications up WHERE up.publication_id=p.id) AND NOT EXISTS(SELECT 1 FROM recent_publication_matches m WHERE m.source_id=p.source_id)`)
 	return collectionErr
@@ -463,7 +457,7 @@ func (w Worker) saveItem(ctx context.Context, item djenItem, tribunal, version s
 		return e
 	}
 	if oldHash != "" && oldHash != item.Hash {
-		_, _ = w.DB.ExecContext(ctx, `UPDATE user_publications SET analysis_status='PENDING',analysis_attempts=0,llm_assisted=FALSE WHERE publication_id=$1`, id)
+		_, _ = w.DB.ExecContext(ctx, `UPDATE user_publications SET analysis_status='PENDING',analysis_attempts=0,llm_assisted=FALSE,analysis_started_at=NULL,analysis_next_attempt_at=NULL WHERE publication_id=$1`, id)
 		_, _ = w.DB.ExecContext(ctx, `UPDATE deadline_suggestions SET status='NEEDS_REVIEW' WHERE publication_id=$1 AND status='PENDING'`, id)
 		_, _ = w.DB.ExecContext(ctx, `UPDATE deadlines SET needs_review=TRUE WHERE publication_id=$1`, id)
 	}
@@ -487,65 +481,104 @@ func (w Worker) saveItem(ctx context.Context, item djenItem, tribunal, version s
 	return nil
 }
 func (w Worker) analyze(ctx context.Context) error {
-	rows, e := w.DB.QueryContext(ctx, `SELECT up.user_id::text,p.id::text,p.content_text,p.available_on::text,p.tribunal,u.llm_consent,coalesce(c.locality,''),coalesce(c.id::text,'') FROM user_publications up JOIN publications p ON p.id=up.publication_id JOIN users u ON u.id=up.user_id LEFT JOIN LATERAL (SELECT id,locality FROM cases WHERE user_id=up.user_id AND case_number=p.case_number AND tribunal=p.tribunal LIMIT 1) c ON true WHERE u.llm_consent AND up.analysis_status IN ('PENDING','RETRY') AND up.analysis_attempts<3 ORDER BY up.created_at LIMIT 1000`)
-	if e != nil {
-		return e
+	_, _ = w.DB.ExecContext(ctx, `UPDATE user_publications SET analysis_status='FAILED',analysis_started_at=NULL WHERE analysis_status='RUNNING' AND analysis_started_at<now()-interval '2 minutes' AND analysis_attempts>=3`)
+	rows, err := w.DB.QueryContext(ctx, `WITH candidate AS (
+		SELECT user_id,publication_id,analysis_status AS previous_status FROM user_publications
+		WHERE analysis_requested_at IS NOT NULL AND EXISTS(SELECT 1 FROM users WHERE users.id=user_publications.user_id AND users.llm_consent) AND (
+			(analysis_status IN ('PENDING','RETRY') AND coalesce(analysis_next_attempt_at,'-infinity'::timestamptz)<=now() AND analysis_attempts<3)
+			OR (analysis_status='RUNNING' AND analysis_started_at<now()-interval '2 minutes' AND analysis_attempts<3)
+		)
+		ORDER BY coalesce(analysis_next_attempt_at,created_at),created_at
+		LIMIT 100 FOR UPDATE SKIP LOCKED
+	), claimed AS (
+		UPDATE user_publications up SET analysis_status='RUNNING',analysis_started_at=now(),analysis_next_attempt_at=NULL,
+			analysis_attempts=up.analysis_attempts+CASE WHEN c.previous_status='RUNNING' THEN 1 ELSE 0 END
+		FROM candidate c WHERE up.user_id=c.user_id AND up.publication_id=c.publication_id
+		RETURNING up.user_id,up.publication_id
+	)
+	SELECT up.user_id::text,p.id::text,p.content_text,p.available_on::text,p.tribunal,u.llm_consent,coalesce(c.locality,''),coalesce(c.id::text,'')
+	FROM claimed cl JOIN user_publications up ON up.user_id=cl.user_id AND up.publication_id=cl.publication_id
+	JOIN publications p ON p.id=up.publication_id JOIN users u ON u.id=up.user_id
+	LEFT JOIN LATERAL (SELECT id,locality FROM cases WHERE user_id=up.user_id AND case_number=p.case_number AND tribunal=p.tribunal LIMIT 1) c ON true
+	ORDER BY up.created_at`)
+	if err != nil {
+		return err
 	}
-	defer rows.Close()
-	type task struct {
-		user, pub, text, available, tribunal, locality, caseID string
-		consent                                                bool
-	}
-	tasks := []task{}
+	tasks := []analysisTask{}
 	for rows.Next() {
-		var t task
-		if rows.Scan(&t.user, &t.pub, &t.text, &t.available, &t.tribunal, &t.consent, &t.locality, &t.caseID) == nil {
-			tasks = append(tasks, t)
+		var task analysisTask
+		if err := rows.Scan(&task.user, &task.pub, &task.text, &task.available, &task.tribunal, &task.consent, &task.locality, &task.caseID); err != nil {
+			rows.Close()
+			return err
 		}
+		tasks = append(tasks, task)
 	}
-	for _, t := range tasks {
-		candidates := extract.Rules(t.text)
-		status := "DONE"
-		llmAssisted := false
-		if len(candidates) == 0 && t.consent {
-			llmAssisted = true
-			var err error
-			provider := w.LLM
-			if provider == nil {
-				provider = extract.CloudflareFromEnv()
-			}
-			candidates, err = provider.Extract(ctx, t.text)
-			if err != nil {
-				status = "RETRY"
-			}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return err
+	}
+	rows.Close()
+	for _, task := range tasks {
+		if err := w.analyzeTask(ctx, task); err != nil {
+			log.Printf("analysis of publication %s: %v", task.pub, err)
+			_, _ = w.DB.ExecContext(context.Background(), `UPDATE user_publications SET analysis_status=CASE WHEN analysis_attempts>=2 THEN 'FAILED' ELSE 'RETRY' END,analysis_attempts=analysis_attempts+1,analysis_started_at=NULL,analysis_next_attempt_at=CASE WHEN analysis_attempts<2 THEN now()+make_interval(mins=>power(2,analysis_attempts)::int) ELSE NULL END WHERE user_id=$1 AND publication_id=$2 AND analysis_status='RUNNING'`, task.user, task.pub)
 		}
-		for _, c := range candidates {
-			var due, pub, first string
-			audit := []byte(`{"reason":"calendar coverage or case locality incomplete"}`)
-			if t.locality != "" && c.Unit == "BUSINESS_DAYS" {
-				result, err := calendar.Calculate(ctx, calendar.DatabaseChecker{DB: w.DB}, t.available, t.tribunal, t.locality, c.DurationDays)
-				if err == nil {
-					due = result.DueOn
-					pub = result.PublicationOn
-					first = result.FirstCountedOn
-					for _, versionID := range result.VersionIDs {
-						var title, url string
-						if w.DB.QueryRowContext(ctx, `SELECT source_title,source_url FROM court_calendar_versions WHERE id=$1`, versionID).Scan(&title, &url) == nil {
-							result.Authorities = append(result.Authorities, calendar.Authority{VersionID: versionID, Title: title, URL: url})
-						}
-					}
-					audit = calendar.JSON(result)
-				}
-			}
-			_, err := w.DB.ExecContext(ctx, `INSERT INTO deadline_suggestions(user_id,publication_id,action,evidence,duration_days,unit,method,rule_version,suggested_due_on,publication_on,first_counted_on,calculation) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) ON CONFLICT(user_id,publication_id,method,rule_version,evidence) DO UPDATE SET suggested_due_on=excluded.suggested_due_on,publication_on=excluded.publication_on,first_counted_on=excluded.first_counted_on,calculation=excluded.calculation,updated_at=now()`, t.user, t.pub, c.Action, c.Evidence, c.DurationDays, c.Unit, c.Method, c.RuleVersion, nullIfEmpty(due), nullIfEmpty(pub), nullIfEmpty(first), audit)
-			if err != nil {
-				log.Printf("suggestion insert: %v", err)
-			}
-		}
-		_, _ = w.DB.ExecContext(ctx, `UPDATE user_publications SET analysis_status=CASE WHEN $3='RETRY' AND analysis_attempts>=2 THEN 'FAILED' ELSE $3 END,analysis_attempts=analysis_attempts+1,llm_assisted=llm_assisted OR $4 WHERE user_id=$1 AND publication_id=$2`, t.user, t.pub, status, llmAssisted)
 	}
 	return nil
 }
+
+type analysisTask struct {
+	user, pub, text, available, tribunal, locality, caseID string
+	consent                                                bool
+}
+
+func (w Worker) analyzeTask(ctx context.Context, t analysisTask) error {
+	candidates := extract.Rules(t.text)
+	status := "DONE"
+	llmAssisted := false
+	if len(candidates) == 0 && t.consent {
+		llmAssisted = true
+		if _, err := w.DB.ExecContext(ctx, `UPDATE user_publications SET llm_assisted=TRUE WHERE user_id=$1 AND publication_id=$2`, t.user, t.pub); err != nil {
+			return err
+		}
+		var err error
+		provider := w.LLM
+		if provider == nil {
+			provider = extract.CloudflareFromEnv()
+		}
+		candidates, err = provider.Extract(ctx, t.text)
+		if err != nil {
+			status = "RETRY"
+		}
+	}
+	for _, c := range candidates {
+		var due, pub, first string
+		audit := []byte(`{"reason":"calendar coverage or case locality incomplete"}`)
+		if t.locality != "" && c.Unit == "BUSINESS_DAYS" {
+			result, err := calendar.Calculate(ctx, calendar.DatabaseChecker{DB: w.DB}, t.available, t.tribunal, t.locality, c.DurationDays)
+			if err == nil {
+				due = result.DueOn
+				pub = result.PublicationOn
+				first = result.FirstCountedOn
+				for _, versionID := range result.VersionIDs {
+					var title, url string
+					if w.DB.QueryRowContext(ctx, `SELECT source_title,source_url FROM court_calendar_versions WHERE id=$1`, versionID).Scan(&title, &url) == nil {
+						result.Authorities = append(result.Authorities, calendar.Authority{VersionID: versionID, Title: title, URL: url})
+					}
+				}
+				audit = calendar.JSON(result)
+			}
+		}
+		_, err := w.DB.ExecContext(ctx, `INSERT INTO deadline_suggestions(user_id,publication_id,action,evidence,duration_days,unit,method,rule_version,suggested_due_on,publication_on,first_counted_on,calculation) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) ON CONFLICT(user_id,publication_id,method,rule_version,evidence) DO UPDATE SET suggested_due_on=excluded.suggested_due_on,publication_on=excluded.publication_on,first_counted_on=excluded.first_counted_on,calculation=excluded.calculation,updated_at=now()`, t.user, t.pub, c.Action, c.Evidence, c.DurationDays, c.Unit, c.Method, c.RuleVersion, nullIfEmpty(due), nullIfEmpty(pub), nullIfEmpty(first), audit)
+		if err != nil {
+			return err
+		}
+	}
+	_, err := w.DB.ExecContext(ctx, `UPDATE user_publications SET analysis_status=CASE WHEN $3='RETRY' AND analysis_attempts>=2 THEN 'FAILED' ELSE $3 END,analysis_attempts=analysis_attempts+1,llm_assisted=llm_assisted OR $4,analysis_started_at=NULL,analysis_next_attempt_at=CASE WHEN $3='RETRY' AND analysis_attempts<2 THEN now()+make_interval(mins=>power(2,analysis_attempts)::int) ELSE NULL END WHERE user_id=$1 AND publication_id=$2`, t.user, t.pub, status, llmAssisted)
+	return err
+}
+func (w Worker) ProcessAnalysis(ctx context.Context) error { return w.analyze(ctx) }
+
 func nullIfEmpty(s string) any {
 	if s == "" {
 		return nil

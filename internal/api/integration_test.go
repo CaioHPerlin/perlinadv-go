@@ -2,6 +2,7 @@ package api
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -9,7 +10,17 @@ import (
 	"os"
 	"testing"
 	"time"
+
+	"github.com/caiohperlin/perlinadv/internal/extract"
+	"github.com/caiohperlin/perlinadv/internal/worker"
 )
+
+type apiCountingProvider struct{ calls int }
+
+func (p *apiCountingProvider) Extract(context.Context, string) ([]extract.Candidate, error) {
+	p.calls++
+	return nil, nil
+}
 
 func TestOwnedCRUDIntegration(t *testing.T) {
 	if os.Getenv("DATABASE_URL") == "" {
@@ -101,7 +112,7 @@ func TestOwnedCRUDIntegration(t *testing.T) {
 	}
 	source := "TEST:" + suffix
 	defer s.DB.Exec(`DELETE FROM publications WHERE source_id=$1`, source)
-	if err = s.DB.QueryRow(`INSERT INTO publications(source_id,source_hash,tribunal,content_text,available_on) VALUES($1,'hash','TJMS','Intime-se para apresentar em 3 dias úteis','2026-09-04') RETURNING id::text`, source).Scan(&publicationID); err != nil {
+	if err = s.DB.QueryRow(`INSERT INTO publications(source_id,source_hash,tribunal,content_text,available_on) VALUES($1,'hash','TJMS','Intime-se para apresentar manifestação no prazo de 3 dias úteis','2026-09-04') RETURNING id::text`, source).Scan(&publicationID); err != nil {
 		t.Fatal(err)
 	}
 	_, err = s.DB.Exec(`INSERT INTO user_publications(user_id,publication_id) VALUES($1,$2)`, uid, publicationID)
@@ -111,12 +122,55 @@ func TestOwnedCRUDIntegration(t *testing.T) {
 	if err = s.DB.QueryRow(`INSERT INTO deadline_suggestions(user_id,publication_id,action,evidence,duration_days,unit,method,rule_version,suggested_due_on) VALUES($1,$2,'apresentar','3 dias úteis',3,'BUSINESS_DAYS','RULE','test','2026-09-11') RETURNING id::text`, uid, publicationID).Scan(&suggestionID); err != nil {
 		t.Fatal(err)
 	}
+	code, unread := call("GET", "/v1/publications?read=false", token1, nil)
+	if code != 200 || len(unread["items"].([]any)) != 1 {
+		t.Fatalf("unread inbox: %d %v", code, unread)
+	}
+	code, _ = call("POST", "/v1/publications/"+publicationID+"/open", token2, nil)
+	if code != 404 {
+		t.Fatalf("cross-user open: %d", code)
+	}
+	code, _ = call("POST", "/v1/publications/"+publicationID+"/analyze", token1, nil)
+	if code != 409 {
+		t.Fatalf("analysis cannot start before open: %d", code)
+	}
+	code, opened := call("POST", "/v1/publications/"+publicationID+"/open", token1, nil)
+	if code != 202 || opened["isRead"] != true || opened["analysisStatus"] != "PENDING" {
+		t.Fatalf("open and queue analysis: %d %v", code, opened)
+	}
+	provider := &apiCountingProvider{}
+	if err := (worker.Worker{DB: s.DB, LLM: provider}).ProcessAnalysis(context.Background()); err != nil {
+		t.Fatalf("process opened publication: %v", err)
+	}
+	if provider.calls != 0 {
+		t.Fatalf("LLM fallback ran despite a rules candidate: %d calls", provider.calls)
+	}
+	code, opened = call("POST", "/v1/publications/"+publicationID+"/open", token1, nil)
+	if code != 202 || opened["analysisStatus"] != "DONE" {
+		t.Fatalf("reopen reuses completed analysis: %d %v", code, opened)
+	}
+	code, unread = call("GET", "/v1/publications?read=false", token1, nil)
+	if code != 200 || len(unread["items"].([]any)) != 0 {
+		t.Fatalf("read filter after marking: %d %v", code, unread)
+	}
+	code, filtered := call("GET", "/v1/suggestions?publicationId="+publicationID, token1, nil)
+	if code != 200 || len(filtered["items"].([]any)) == 0 {
+		t.Fatalf("publication suggestions: %d %v", code, filtered)
+	}
+	code, _ = call("POST", "/v1/deadlines", token2, map[string]string{"publicationId": publicationID, "title": "Não pertence", "dueOn": "2026-10-01"})
+	if code != 404 {
+		t.Fatalf("cross-user publication linkage: %d", code)
+	}
+	code, linked := call("POST", "/v1/deadlines", token1, map[string]string{"publicationId": publicationID, "title": "Prazo manual", "dueOn": "2026-10-01"})
+	if code != 200 || linked["publicationId"] != publicationID {
+		t.Fatalf("manual deadline publication linkage: %d %v", code, linked)
+	}
 	code, publication := call("GET", "/v1/publications/"+publicationID, token1, nil)
 	if code != 200 || publication["llmAssisted"] != false {
 		t.Fatalf("rule publication provenance: %d %v", code, publication)
 	}
 	code, suggestions := call("GET", "/v1/suggestions", token1, nil)
-	if code != 200 || len(suggestions["items"].([]any)) == 0 || suggestions["items"].([]any)[0].(map[string]any)["llmAssisted"] != false {
+	if code != 200 || len(suggestions["items"].([]any)) == 0 || suggestions["items"].([]any)[0].(map[string]any)["llmAssisted"] != false || suggestions["items"].([]any)[0].(map[string]any)["availableOn"] != "2026-09-04" {
 		t.Fatalf("rule suggestion provenance: %d %v", code, suggestions)
 	}
 	_, err = s.DB.Exec(`INSERT INTO google_connections(user_id,refresh_token_cipher,calendar_id) VALUES($1,$2,'primary')`, uid, []byte{1})
@@ -128,16 +182,24 @@ func TestOwnedCRUDIntegration(t *testing.T) {
 	if jobs != 0 {
 		t.Fatalf("unconfirmed suggestion created %d Google jobs", jobs)
 	}
+	code, manualAgenda := call("POST", "/v1/deadlines", token1, map[string]string{"publicationId": publicationID, "title": "Prazo manual confirmado", "dueOn": "2026-10-08"})
+	if code != 200 || manualAgenda["googleSyncStatus"] != "PENDING" {
+		t.Fatalf("manually registered deadline queues Google sync: %d %v", code, manualAgenda)
+	}
+	_ = s.DB.QueryRow(`SELECT count(*) FROM google_jobs WHERE user_id=$1`, uid).Scan(&jobs)
+	if jobs != 1 {
+		t.Fatalf("manual deadline created %d Google jobs", jobs)
+	}
 	code, _ = call("POST", "/v1/suggestions/"+suggestionID+"/confirm", token2, map[string]string{"title": "Outro", "dueOn": "2026-09-11"})
 	if code != 404 {
 		t.Fatalf("cross-user confirmation: %d", code)
 	}
 	code, confirmed := call("POST", "/v1/suggestions/"+suggestionID+"/confirm", token1, map[string]string{"title": "Revisado", "dueOn": "2026-09-12"})
-	if code != 200 || confirmed["llmAssisted"] != false {
+	if code != 200 || confirmed["llmAssisted"] != false || confirmed["googleSyncStatus"] != "PENDING" {
 		t.Fatalf("confirmation provenance: %d %v", code, confirmed)
 	}
 	_ = s.DB.QueryRow(`SELECT count(*) FROM google_jobs WHERE user_id=$1`, uid).Scan(&jobs)
-	if jobs != 1 {
+	if jobs != 2 {
 		t.Fatalf("confirmed suggestion created %d Google jobs", jobs)
 	}
 	code, _ = call("POST", "/v1/auth/logout", token1, nil)

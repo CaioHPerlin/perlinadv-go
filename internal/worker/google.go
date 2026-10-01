@@ -23,6 +23,19 @@ func (w Worker) SyncGoogle(ctx context.Context) error {
 	if err != nil || !c.Configured() {
 		return nil
 	}
+	conn, err := w.DB.Conn(ctx)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+	var locked bool
+	if err := conn.QueryRowContext(ctx, `SELECT pg_try_advisory_lock(7242027)`).Scan(&locked); err != nil {
+		return err
+	}
+	if !locked {
+		return nil
+	}
+	defer conn.ExecContext(context.Background(), `SELECT pg_advisory_unlock(7242027)`)
 	rows, err := w.DB.QueryContext(ctx, `SELECT id::text,user_id::text,coalesce(deadline_id::text,''),operation,event_id,calendar_id,attempts FROM google_jobs WHERE status='PENDING' AND next_attempt_at<=now() ORDER BY created_at LIMIT 100`)
 	if err != nil {
 		return err
