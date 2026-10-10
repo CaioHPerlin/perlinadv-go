@@ -44,6 +44,8 @@ Adicione a chave pública correspondente a `~/.ssh/authorized_keys` do usuário 
 
 O primeiro deploy da API pode ocorrer antes da interface. O script cria `.env.release` com a tag, inicia o banco, aplica migrações e inicia API e worker. O workflow web publica e inicia a interface no mesmo domínio. Configure DNS antes de verificar HTTPS. A ordem dos deploys subsequentes é independente desde que mudanças de API e banco sejam compatíveis com a versão anterior da interface.
 
+Depois de ativar `DEPLOY_ENABLED`, execute manualmente o workflow **CI and deploy** na `main` de cada repositório para implantar o commit atual. Pushes seguintes fazem deploy automaticamente.
+
 ## Conferir e recuperar
 
 ```sh
