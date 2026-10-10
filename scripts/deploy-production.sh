@@ -9,6 +9,10 @@ fi
 
 cd "$(dirname "$0")/.."
 test -f .env.production || { echo "Missing .env.production" >&2; exit 2; }
+if grep -q 'replace-with' .env.production; then
+  echo "Replace the sample database password in .env.production" >&2
+  exit 2
+fi
 old_tag=''
 if [[ -f .env.release ]]; then
   old_tag=$(sed -n 's/^PERLINADV_IMAGE_TAG=//p' .env.release)
