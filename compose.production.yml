@@ -1,0 +1,76 @@
+services:
+  db:
+    image: postgres:18
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: perlinadv
+      POSTGRES_USER: perlinadv
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env.production}
+    volumes:
+      - postgres_data:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U perlinadv -d perlinadv"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+    networks:
+      - private
+
+  migrate:
+    image: ghcr.io/caiohperlin/perlinadv:${PERLINADV_IMAGE_TAG:?set PERLINADV_IMAGE_TAG}
+    command: ["/app/migrate"]
+    env_file: .env.production
+    depends_on:
+      db:
+        condition: service_healthy
+    profiles: ["tools"]
+    networks:
+      - private
+
+  api:
+    image: ghcr.io/caiohperlin/perlinadv:${PERLINADV_IMAGE_TAG:?set PERLINADV_IMAGE_TAG}
+    command: ["/app/api"]
+    restart: unless-stopped
+    env_file: .env.production
+    environment:
+      ADDRESS: :3000
+    depends_on:
+      db:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:3000/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 15s
+    labels:
+      traefik.enable: "true"
+      traefik.docker.network: traefik
+      traefik.http.routers.perlinadv-api.rule: Host(`adv.perlin.com.br`) && (PathPrefix(`/v1`) || Path(`/health`))
+      traefik.http.routers.perlinadv-api.entrypoints: websecure
+      traefik.http.routers.perlinadv-api.tls.certresolver: letsencrypt
+      traefik.http.routers.perlinadv-api.priority: "100"
+      traefik.http.services.perlinadv-api.loadbalancer.server.port: "3000"
+    networks:
+      - private
+      - traefik
+
+  worker:
+    image: ghcr.io/caiohperlin/perlinadv:${PERLINADV_IMAGE_TAG:?set PERLINADV_IMAGE_TAG}
+    command: ["/app/worker"]
+    restart: unless-stopped
+    env_file: .env.production
+    depends_on:
+      db:
+        condition: service_healthy
+    networks:
+      - private
+
+volumes:
+  postgres_data:
+
+networks:
+  private:
+  traefik:
+    external: true
+    name: traefik

@@ -1,5 +1,7 @@
 # PerlinAdv (API Go)
 
+Deploy com Traefik, GHCR e GitHub Actions: [guia de produção](doc/deployment.md).
+
 API de monitoramento DJEN e gestão de processos e prazos. O resultado da extração e do cálculo é **sugestão**: nenhum prazo calculado é confirmado ou enviado ao Google Agenda sem ação do advogado. A especificação HTTP está em [doc/openapi.yaml](doc/openapi.yaml).
 
 ## Executar localmente
