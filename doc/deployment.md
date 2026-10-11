@@ -4,7 +4,7 @@ A interface React do repositório `CaioHPerlin/perlinadv-web` ocupa `/`. O Traef
 
 ## Preparar a VPS
 
-Instale Docker Engine com o plugin Compose e permita TCP 22 (ou a porta SSH escolhida), 80 e 443 no firewall. Aponte o registro DNS `A` de `adv.perlin.com.br` para a VPS; se houver `AAAA`, ele também deve apontar para uma VPS que aceite 80/443 em IPv6. Use um usuário de deploy que possa executar Docker e que seja dono de `~/apps/perlinadv`.
+Na VPS Ubuntu 24.04, instale Docker Engine e o plugin Compose com `sudo bash scripts/install-docker-ubuntu.sh` deste repositório. Permita TCP 22 (ou a porta SSH escolhida), 80 e 443 na Security List/NSG da Oracle Cloud e no firewall local. Aponte o registro DNS `A` de `adv.perlin.com.br` para o IP de origem da VPS; o proxy da Cloudflare pode continuar ativo para HTTP(S), mas o SSH deve usar o IP direto. Se houver `AAAA`, ele também deve apontar para uma VPS que aceite 80/443 em IPv6. Use um usuário de deploy que possa executar Docker e que seja dono de `~/apps/perlinadv`.
 
 ```sh
 docker network create traefik
