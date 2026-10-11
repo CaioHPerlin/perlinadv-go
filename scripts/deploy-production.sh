@@ -13,6 +13,12 @@ if grep -q 'replace-with' .env.production; then
   echo "Replace the sample database password in .env.production" >&2
   exit 2
 fi
+if [[ ${GHCR_LOGIN:-} == 1 ]]; then
+  auth_dir=$(mktemp -d)
+  export DOCKER_CONFIG=$auth_dir
+  trap 'docker logout ghcr.io >/dev/null 2>&1 || true; rm -rf "$auth_dir"' EXIT
+  docker login ghcr.io -u "${GHCR_USER:?set GHCR_USER}" --password-stdin
+fi
 old_tag=''
 if [[ -f .env.release ]]; then
   old_tag=$(sed -n 's/^PERLINADV_IMAGE_TAG=//p' .env.release)

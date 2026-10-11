@@ -77,9 +77,10 @@ jobs:
           DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
           DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
           DEPLOY_PORT: ${{ secrets.DEPLOY_PORT }}
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           SHA: ${{ github.sha }}
         run: |
           ssh -p "$DEPLOY_PORT" "$DEPLOY_USER@$DEPLOY_HOST" 'mkdir -p ~/apps/perlinadv/api/scripts'
           scp -P "$DEPLOY_PORT" compose.production.yml "$DEPLOY_USER@$DEPLOY_HOST:apps/perlinadv/api/compose.production.yml"
           scp -P "$DEPLOY_PORT" scripts/deploy-production.sh "$DEPLOY_USER@$DEPLOY_HOST:apps/perlinadv/api/scripts/deploy-production.sh"
-          ssh -p "$DEPLOY_PORT" "$DEPLOY_USER@$DEPLOY_HOST" "bash ~/apps/perlinadv/api/deploy-production.sh $SHA"
+          printf '%s' "$GHCR_TOKEN" | ssh -p "$DEPLOY_PORT" "$DEPLOY_USER@$DEPLOY_HOST" "GHCR_LOGIN=1 GHCR_USER=CaioHPerlin bash ~/apps/perlinadv/api/scripts/deploy-production.sh $SHA"

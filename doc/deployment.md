@@ -20,13 +20,7 @@ Não exponha o dashboard do Traefik. O resolver `letsencrypt` usa o desafio HTTP
 
 Copie `.env.production.example` para `~/apps/perlinadv/api/.env.production` e substitua os valores. Use uma senha longa e segura para URL em `POSTGRES_PASSWORD`, repetida em `DATABASE_URL`. Configure SMTP real; Mailpit não integra o ambiente de produção. Execute `chmod 600` no arquivo. `WEB_APP_URL` deve ser `https://adv.perlin.com.br`; se usar Google Agenda, cadastre `https://adv.perlin.com.br/v1/google/callback` no OAuth e forneça `GOOGLE_TOKEN_KEY` gerada por `openssl rand -base64 32`. Se não usar Google ou Cloudflare, deixe as credenciais correspondentes vazias.
 
-Autorize leitura dos dois pacotes privados no GHCR para um token de máquina e faça login na VPS:
-
-```sh
-printf '%s' "$GHCR_READ_TOKEN" | docker login ghcr.io -u CaioHPerlin --password-stdin
-```
-
-Não coloque o token em `.env.production`; o login grava a credencial no contexto Docker do usuário de deploy. Restrinja o acesso a esse usuário.
+Os workflows usam o `GITHUB_TOKEN` temporário de cada repositório para baixar sua própria imagem privada do GHCR. O token é enviado ao processo de deploy pelo SSH e removido da configuração Docker ao final; não é necessário guardar um token de leitura na VPS.
 
 ## Configurar GitHub Actions
 
