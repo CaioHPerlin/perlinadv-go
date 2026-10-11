@@ -27,6 +27,19 @@ services:
     networks:
       - private
 
+  adminer:
+    image: adminer:6.0.1
+    profiles: ["tools"]
+    environment:
+      ADMINER_DEFAULT_SERVER: db
+    ports:
+      - "127.0.0.1:8080:8080"
+    depends_on:
+      db:
+        condition: service_healthy
+    networks:
+      - private
+
   api:
     image: ghcr.io/caiohperlin/perlinadv:${PERLINADV_IMAGE_TAG:?set PERLINADV_IMAGE_TAG}
     command: ["/app/api"]

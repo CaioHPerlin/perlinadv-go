@@ -50,6 +50,23 @@ ADMIN_NAME='Seu nome' ADMIN_EMAIL='seu-email@example.com' ADMIN_PASSWORD='senha-
 
 Depois de ativar `DEPLOY_ENABLED`, execute manualmente o workflow **CI and deploy** na `main` de cada repositório para implantar o commit atual. Pushes seguintes fazem deploy automaticamente.
 
+## Acessar o PostgreSQL pelo navegador
+
+O Adminer fica disponível apenas em `127.0.0.1:8080` da VPS e inicia sob demanda. Na VPS:
+
+```sh
+cd /opt/perlinadv/api
+docker compose --env-file .env.production --env-file .env.release -f compose.production.yml --profile tools up -d adminer
+```
+
+Em outro terminal no seu computador, mantenha o túnel SSH aberto:
+
+```sh
+ssh -i ~/.ssh/id_oracle -N -L 18080:127.0.0.1:8080 perlin@152.67.57.175
+```
+
+Abra `http://127.0.0.1:18080`. No login, selecione **PostgreSQL**, servidor `db`, usuário `perlinadv` e banco `perlinadv`. A senha do banco está em `/opt/perlinadv/api/.env.production` na linha `POSTGRES_PASSWORD`; consulte-a na VPS com `sed -n 's/^POSTGRES_PASSWORD=//p' /opt/perlinadv/api/.env.production`. A senha da plataforma não é a senha do banco. Depois de usar, encerre o túnel com Ctrl+C e execute `docker compose --env-file .env.production --env-file .env.release -f compose.production.yml --profile tools stop adminer` em `/opt/perlinadv/api`.
+
 ## Conferir e recuperar
 
 ```sh
