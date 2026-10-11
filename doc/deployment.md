@@ -38,6 +38,15 @@ Adicione a chave pública correspondente a `~/.ssh/authorized_keys` do usuário 
 
 O primeiro deploy da API pode ocorrer antes da interface. O script cria `.env.release` com a tag, inicia o banco, aplica migrações e inicia API e worker. O workflow web publica e inicia a interface no mesmo domínio. Configure DNS antes de verificar HTTPS. A ordem dos deploys subsequentes é independente desde que mudanças de API e banco sejam compatíveis com a versão anterior da interface.
 
+Para criar a primeira conta administradora depois da migração, defina `ADMIN_NAME`, `ADMIN_EMAIL` e uma `ADMIN_PASSWORD` de pelo menos 12 caracteres e execute o comando abaixo na VPS. Guarde a senha em local protegido; o comando atualiza a senha se o e-mail já existir.
+
+```sh
+cd ~/apps/perlinadv/api
+ADMIN_NAME='Seu nome' ADMIN_EMAIL='seu-email@example.com' ADMIN_PASSWORD='senha-longa-gerada' \
+  docker compose --env-file .env.production --env-file .env.release -f compose.production.yml \
+  run --rm --no-deps -e ADMIN_NAME -e ADMIN_EMAIL -e ADMIN_PASSWORD api /app/admin
+```
+
 Depois de ativar `DEPLOY_ENABLED`, execute manualmente o workflow **CI and deploy** na `main` de cada repositório para implantar o commit atual. Pushes seguintes fazem deploy automaticamente.
 
 ## Conferir e recuperar
@@ -49,7 +58,7 @@ docker compose --env-file ~/apps/perlinadv/api/.env.production --env-file ~/apps
 docker compose --env-file ~/apps/perlinadv/web/.env.release -f ~/apps/perlinadv/web/compose.production.yml ps
 ```
 
-Para voltar a uma imagem anterior, rode `bash ~/apps/perlinadv/api/scripts/deploy-production.sh SHA_ANTERIOR` ou o script equivalente em `web/scripts`. O script de API roda as migrações novamente; Goose não reverte migrações automaticamente. Migrações futuras precisam ser compatíveis com a versão anterior até terminar a janela de rollback. Um erro de health check durante o deploy tenta restaurar a tag anterior, mas não desfaz alterações no banco.
+Para voltar a uma imagem anterior **já baixada na VPS**, rode `bash ~/apps/perlinadv/api/scripts/deploy-production.sh SHA_ANTERIOR` ou o script equivalente em `web/scripts`. Se a imagem não estiver em cache, passe um token com leitura do pacote privado pelo stdin com `GHCR_LOGIN=1 GHCR_USER=CaioHPerlin`; o token é descartado ao final. O script de API roda as migrações novamente; Goose não reverte migrações automaticamente. Migrações futuras precisam ser compatíveis com a versão anterior até terminar a janela de rollback. Um erro de health check durante o deploy tenta restaurar a tag anterior, mas não desfaz alterações no banco.
 
 Antes de cada migração de produção, mantenha backup testado do banco. Exemplo de backup manual, executado na VPS pelo usuário de deploy:
 

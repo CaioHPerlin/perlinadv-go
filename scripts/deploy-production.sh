@@ -39,7 +39,13 @@ rollback() {
   fi
 }
 
-if ! compose --profile tools pull api worker migrate; then
+if [[ ${GHCR_LOGIN:-} == 1 ]]; then
+  if ! compose --profile tools pull api worker migrate; then
+    rollback
+    exit 1
+  fi
+elif ! docker image inspect "ghcr.io/caiohperlin/perlinadv:$tag" >/dev/null 2>&1; then
+  echo "Image $tag is not cached; supply GHCR credentials to pull it" >&2
   rollback
   exit 1
 fi
