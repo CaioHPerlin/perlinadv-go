@@ -77,6 +77,12 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 		fail(w, 401, "invalid credentials")
 		return
 	}
+	if account.Role == "LAWYER" {
+		if _, err = s.DB.ExecContext(r.Context(), `INSERT INTO lawyer_onboarding_syncs(user_id) VALUES($1) ON CONFLICT(user_id) DO NOTHING`, account.ID); err != nil {
+			fail(w, 500, "could not prepare publication sync")
+			return
+		}
+	}
 	t, err := token()
 	if err != nil {
 		fail(w, 500, "token error")

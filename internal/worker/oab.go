@@ -19,7 +19,7 @@ type lawyerPoll struct {
 
 // pollLawyers repeats a short overlapping window so source edits are seen.
 func (w Worker) pollLawyers(ctx context.Context, today time.Time) error {
-	rows, err := w.DB.QueryContext(ctx, `SELECT id::text,oab_number,oab_uf,labor_practice FROM users WHERE active AND role='LAWYER' AND llm_consent AND oab_number IS NOT NULL AND oab_uf IS NOT NULL ORDER BY id`)
+	rows, err := w.DB.QueryContext(ctx, `SELECT id::text,oab_number,oab_uf,labor_practice FROM users WHERE active AND role='LAWYER' AND llm_consent AND oab_number IS NOT NULL AND oab_uf IS NOT NULL AND NOT EXISTS(SELECT 1 FROM lawyer_onboarding_syncs s WHERE s.user_id=users.id AND s.status IN ('PENDING','RUNNING')) ORDER BY id`)
 	if err != nil {
 		return err
 	}
@@ -70,6 +70,10 @@ func (w Worker) pollLawyers(ctx context.Context, today time.Time) error {
 }
 
 func (w Worker) pollLawyerTribunal(ctx context.Context, lawyer lawyerPoll, tribunal, start, end string) (int, error) {
+	return w.pollLawyerTribunalWithProgress(ctx, lawyer, tribunal, start, end, nil)
+}
+
+func (w Worker) pollLawyerTribunalWithProgress(ctx context.Context, lawyer lawyerPoll, tribunal, start, end string, onPage func(seen, total int) error) (int, error) {
 	const pageSize = 50
 	seen := 0
 	for page := 1; page <= 1000; page++ {
@@ -115,6 +119,11 @@ func (w Worker) pollLawyerTribunal(ctx context.Context, lawyer lawyerPoll, tribu
 				return seen, err
 			}
 			seen++
+		}
+		if onPage != nil {
+			if err := onPage(seen, result.Count); err != nil {
+				return seen, err
+			}
 		}
 		if seen >= result.Count {
 			return seen, nil

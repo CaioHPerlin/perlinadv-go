@@ -51,6 +51,18 @@ func main() {
 			runCollection()
 		}
 	}()
+	go func() {
+		ticker := time.NewTicker(5 * time.Second)
+		defer ticker.Stop()
+		for {
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+			if err := w.ProcessOnboardingSync(ctx); err != nil {
+				log.Printf("first-login publication sync: %v", err)
+			}
+			cancel()
+			<-ticker.C
+		}
+	}()
 	ticker := time.NewTicker(5 * time.Second)
 	defer ticker.Stop()
 	for range ticker.C {

@@ -76,6 +76,9 @@ func (s *Server) routes() {
 			r.Delete("/me", s.deleteMe)
 			r.Group(func(r chi.Router) {
 				r.Use(s.requireConsent)
+				r.Get("/onboarding/publications", s.onboardingPublicationStatus)
+				r.Post("/onboarding/publications/retry", s.retryOnboardingPublications)
+				r.Post("/onboarding/publications/acknowledge", s.acknowledgeOnboardingPublications)
 				r.Get("/cases", s.listCases)
 				r.Post("/cases", s.createCase)
 				r.Get("/cases/{id}", s.getCase)
