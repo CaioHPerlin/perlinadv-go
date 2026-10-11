@@ -52,20 +52,19 @@ Depois de ativar `DEPLOY_ENABLED`, execute manualmente o workflow **CI and deplo
 
 ## Acessar o PostgreSQL pelo navegador
 
-O Adminer fica disponível apenas em `127.0.0.1:8080` da VPS e inicia sob demanda. Na VPS:
+O Adminer fica disponível apenas em `127.0.0.1:8080` da VPS e inicia sob demanda. Na sua máquina, na raiz deste repositório:
 
 ```sh
-cd /opt/perlinadv/api
-docker compose --env-file .env.production --env-file .env.release -f compose.production.yml --profile tools up -d adminer
+make db-access
 ```
 
-Em outro terminal no seu computador, mantenha o túnel SSH aberto:
+Mantenha o comando em execução e abra `http://127.0.0.1:18080`. No login, selecione **PostgreSQL**, servidor `db`, usuário `perlinadv` e banco `perlinadv`. A senha do banco está em `/opt/perlinadv/api/.env.production` na linha `POSTGRES_PASSWORD`; consulte-a na VPS com:
 
 ```sh
-ssh -i ~/.ssh/id_oracle -N -L 18080:127.0.0.1:8080 perlin@152.67.57.175
+ssh -i ~/.ssh/id_oracle perlin@152.67.57.175 "sed -n 's/^POSTGRES_PASSWORD=//p' /opt/perlinadv/api/.env.production"
 ```
 
-Abra `http://127.0.0.1:18080`. No login, selecione **PostgreSQL**, servidor `db`, usuário `perlinadv` e banco `perlinadv`. A senha do banco está em `/opt/perlinadv/api/.env.production` na linha `POSTGRES_PASSWORD`; consulte-a na VPS com `sed -n 's/^POSTGRES_PASSWORD=//p' /opt/perlinadv/api/.env.production`. A senha da plataforma não é a senha do banco. Depois de usar, encerre o túnel com Ctrl+C e execute `docker compose --env-file .env.production --env-file .env.release -f compose.production.yml --profile tools stop adminer` em `/opt/perlinadv/api`.
+A senha da plataforma não é a senha do banco. Depois de usar, encerre o túnel com Ctrl+C e execute `make db-access-stop` para desligar o Adminer na VPS. Se necessário, altere a porta local com `make db-access DB_ADMINER_PORT=18081`.
 
 ## Conferir e recuperar
 
