@@ -77,6 +77,10 @@ docker compose --env-file /opt/perlinadv/web/.env.release -f /opt/perlinadv/web/
 
 Para voltar a uma imagem anterior **já baixada na VPS**, rode `bash /opt/perlinadv/api/scripts/deploy-production.sh SHA_ANTERIOR` ou o script equivalente em `web/scripts`. Se a imagem não estiver em cache, passe um token com leitura do pacote privado pelo stdin com `GHCR_LOGIN=1 GHCR_USER=CaioHPerlin`; o token é descartado ao final. O script de API roda as migrações novamente; Goose não reverte migrações automaticamente. Migrações futuras precisam ser compatíveis com a versão anterior até terminar a janela de rollback. Um erro de health check durante o deploy tenta restaurar a tag anterior, mas não desfaz alterações no banco.
 
+## Conferir a cobertura diária do DJEN
+
+O worker consulta hoje a cada hora, reconcilia os sete dias úteis anteriores uma vez ao dia e guarda `last_covered_on` por advogado e tribunal. Se uma data falhar, a próxima execução retoma do último dia coberto. Confira `/v1/admin/sync`: cada item em `lawyerPolls` traz `status`, `lastCoveredOn` e `lastError`. Um dia sem cobertura até o dia seguinte requer investigação; enquanto o DJEN estiver indisponível, a aplicação não pode garantir a entrega de novas comunicações. A coleta não substitui a conferência do diário oficial pelo advogado.
+
 Antes de cada migração de produção, mantenha backup testado do banco. Exemplo de backup manual, executado na VPS pelo usuário de deploy:
 
 ```sh

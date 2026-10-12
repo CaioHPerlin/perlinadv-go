@@ -180,17 +180,17 @@ paths:
   /v1/publications/{id}/open:
     post:
       security: [{ bearerAuth: [] }]
-      summary: Marcar publicação como lida e enfileirar análise idempotentemente
+      summary: Marcar publicação como lida (análise já enfileirada na ingestão)
       description: Retorna isRead, analysisStatus e llmAssisted; llmAssisted é nulo até haver proveniência disponível. A extração ocorre em background e não bloqueia a resposta.
       parameters: [{ in: path, name: id, required: true, schema: { type: string, format: uuid } }]
-      responses: { '202': { description: Publicação marcada como lida e análise enfileirada ou já concluída }, '404': { description: Publicação não pertence ao advogado } }
+      responses: { '202': { description: Publicação marcada como lida; análise enfileirada ou já concluída }, '404': { description: Publicação não pertence ao advogado } }
   /v1/publications/{id}/analyze:
     post:
       security: [{ bearerAuth: [] }]
       summary: Solicitar nova tentativa de análise após falha
       description: Enfileira a publicação sem executar o LLM na requisição. Análises concluídas são preservadas.
       parameters: [{ in: path, name: id, required: true, schema: { type: string, format: uuid } }]
-      responses: { '202': { description: Estado da análise }, '404': { description: Publicação não pertence ao advogado }, '409': { description: A publicação deve ser aberta antes de uma nova tentativa } }
+      responses: { '202': { description: Estado da análise }, '404': { description: Publicação não pertence ao advogado }, '409': { description: A análise ainda não foi enfileirada } }
   /v1/publications/{id}/read:
     patch:
       security: [{ bearerAuth: [] }]
@@ -324,5 +324,5 @@ paths:
   /v1/admin/sync:
     get:
       security: [{ bearerAuth: [] }]
-      summary: Última edição e falhas de coleta por OAB/tribunal (admin)
-      responses: { '200': { description: Estado das fontes, incluindo lawyerPollFailures } }
+      summary: Última data coberta e falhas de coleta por OAB/tribunal (admin)
+      responses: { '200': { description: Estado das fontes, incluindo lawyerPolls.lastCoveredOn e lawyerPollFailures } }

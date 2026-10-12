@@ -116,7 +116,7 @@ func (s *Server) updateCase(w http.ResponseWriter, r *http.Request) {
 	s.getCase(w, r)
 }
 func (s *Server) reanalyzeCasePublications(r *http.Request, caseNumber string) {
-	_, _ = s.DB.ExecContext(r.Context(), `UPDATE user_publications up SET analysis_status='PENDING',analysis_attempts=0 FROM publications p WHERE p.id=up.publication_id AND up.user_id=$1 AND p.case_number=$2 AND up.analysis_status<>'PENDING'`, user(r).ID, caseNumber)
+	_, _ = s.DB.ExecContext(r.Context(), `UPDATE user_publications up SET analysis_status='PENDING',analysis_attempts=0,analysis_requested_at=COALESCE(analysis_requested_at,now()),analysis_started_at=NULL,analysis_next_attempt_at=NULL FROM publications p WHERE p.id=up.publication_id AND up.user_id=$1 AND p.case_number=$2 AND up.analysis_status<>'PENDING'`, user(r).ID, caseNumber)
 }
 func (s *Server) deleteCase(w http.ResponseWriter, r *http.Request) {
 	id, parseErr := uuid.Parse(param(r, "id"))

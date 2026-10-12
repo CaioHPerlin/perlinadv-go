@@ -141,7 +141,7 @@ func (s *Server) approveCalendar(w http.ResponseWriter, r *http.Request) {
 		fail(w, 500, "database error")
 		return
 	}
-	_, err = tx.ExecContext(r.Context(), `UPDATE user_publications up SET analysis_status='PENDING',analysis_attempts=0 FROM publications p WHERE p.id=up.publication_id AND p.tribunal=$1 AND p.available_on<=$3 AND p.available_on+interval '900 days'>=$2 AND up.analysis_status<>'PENDING'`, tribunal, start, end)
+	_, err = tx.ExecContext(r.Context(), `UPDATE user_publications up SET analysis_status='PENDING',analysis_attempts=0,analysis_requested_at=COALESCE(analysis_requested_at,now()),analysis_started_at=NULL,analysis_next_attempt_at=NULL FROM publications p WHERE p.id=up.publication_id AND p.tribunal=$1 AND p.available_on<=$3 AND p.available_on+interval '900 days'>=$2 AND up.analysis_status<>'PENDING'`, tribunal, start, end)
 	if err != nil {
 		fail(w, 500, "database error")
 		return
@@ -173,17 +173,17 @@ func (s *Server) syncStatus(w http.ResponseWriter, r *http.Request) {
 	_ = s.DB.QueryRowContext(r.Context(), `SELECT count(*) FROM google_jobs WHERE status='FAILED'`).Scan(&googleFailed)
 	_ = s.DB.QueryRowContext(r.Context(), `SELECT count(*) FROM djen_lawyer_syncs WHERE status='FAILED'`).Scan(&lawyerPollFailed)
 	polls := []map[string]any{}
-	pollRows, err := s.DB.QueryContext(r.Context(), `SELECT user_id::text,tribunal,status,coalesce(last_succeeded_at::text,''),item_count,last_error FROM djen_lawyer_syncs ORDER BY last_started_at DESC NULLS LAST LIMIT 100`)
+	pollRows, err := s.DB.QueryContext(r.Context(), `SELECT user_id::text,tribunal,status,coalesce(last_succeeded_at::text,''),coalesce(last_covered_on::text,''),coalesce(retry_from_on::text,''),item_count,last_error FROM djen_lawyer_syncs ORDER BY last_started_at DESC NULLS LAST LIMIT 100`)
 	if err != nil {
 		fail(w, 500, "database error")
 		return
 	}
 	defer pollRows.Close()
 	for pollRows.Next() {
-		var userID, tribunal, status, lastSuccess, lastError string
+		var userID, tribunal, status, lastSuccess, lastCovered, retryFrom, lastError string
 		var count int
-		if pollRows.Scan(&userID, &tribunal, &status, &lastSuccess, &count, &lastError) == nil {
-			polls = append(polls, map[string]any{"userId": userID, "tribunal": tribunal, "status": status, "lastSucceededAt": lastSuccess, "itemCount": count, "lastError": lastError})
+		if pollRows.Scan(&userID, &tribunal, &status, &lastSuccess, &lastCovered, &retryFrom, &count, &lastError) == nil {
+			polls = append(polls, map[string]any{"userId": userID, "tribunal": tribunal, "status": status, "lastSucceededAt": lastSuccess, "lastCoveredOn": lastCovered, "retryFromOn": retryFrom, "itemCount": count, "lastError": lastError})
 		}
 	}
 	write(w, 200, map[string]any{"items": items, "lawyerPolls": polls, "lawyerPollFailures": lawyerPollFailed, "analysisFailures": analysisFailed, "googleFailures": googleFailed})

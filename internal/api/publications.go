@@ -69,7 +69,7 @@ func (s *Server) analyzePublication(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if !requested {
-			fail(w, 409, "open the publication before retrying its analysis")
+			fail(w, 409, "publication analysis is not queued")
 			return
 		}
 		write(w, 202, map[string]any{"status": status})

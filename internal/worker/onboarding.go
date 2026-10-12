@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"sort"
 	"time"
 )
 
@@ -35,11 +36,11 @@ func (w Worker) processOnboardingSync(ctx context.Context, onlyUserID string) er
 		return w.failOnboarding(lawyer.id, err)
 	}
 	zone, _ := time.LoadLocation("America/Campo_Grande")
-	today := time.Now().In(zone).Format("2006-01-02")
+	today := time.Now().In(zone)
+	days := onboardingDays(today)
+	// TRT24 is optional coverage and runs in the recurring collector; it does
+	// not block the first-login result for the two primary tribunals.
 	tribunals := []string{"TJMS", "TRF3"}
-	if lawyer.labor {
-		tribunals = append(tribunals, "TRT24")
-	}
 	for index, tribunal := range tribunals {
 		base := index * 100 / len(tribunals)
 		if _, err = w.DB.ExecContext(ctx, `UPDATE lawyer_onboarding_syncs SET current_tribunal=$2,progress=GREATEST(progress,$3),updated_at=now() WHERE user_id=$1 AND status='RUNNING'`, lawyer.id, tribunal, base); err != nil {
@@ -57,12 +58,12 @@ func (w Worker) processOnboardingSync(ctx context.Context, onlyUserID string) er
 			_, updateErr := w.DB.ExecContext(ctx, `UPDATE lawyer_onboarding_syncs SET progress=GREATEST(progress,$2),updated_at=now() WHERE user_id=$1 AND status='RUNNING'`, lawyer.id, progress)
 			return updateErr
 		}
-		if _, err = w.pollLawyerTribunalWithProgress(ctx, lawyer, tribunal, today, today, onPage); err != nil {
-			return w.failOnboarding(lawyer.id, fmt.Errorf("%s: %w", tribunal, err))
+		if _, err = w.pollLawyerTribunalWithProgress(ctx, lawyer, tribunal, days[0], days[len(days)-1], onPage); err != nil {
+			return w.failOnboarding(lawyer.id, fmt.Errorf("%s %s..%s: %w", tribunal, days[0], days[len(days)-1], err))
 		}
 	}
 	var count int
-	if err = w.DB.QueryRowContext(ctx, `SELECT count(*) FROM user_publications up JOIN publications p ON p.id=up.publication_id WHERE up.user_id=$1 AND p.available_on=$2`, lawyer.id, today).Scan(&count); err != nil {
+	if err = w.DB.QueryRowContext(ctx, `SELECT count(*) FROM user_publications up JOIN publications p ON p.id=up.publication_id WHERE up.user_id=$1 AND p.available_on BETWEEN $2 AND $3`, lawyer.id, days[0], days[len(days)-1]).Scan(&count); err != nil {
 		return w.failOnboarding(lawyer.id, err)
 	}
 	_, err = w.DB.ExecContext(ctx, `UPDATE lawyer_onboarding_syncs SET status='DONE',progress=100,current_tribunal='',publication_count=$2,completed_at=now(),updated_at=now() WHERE user_id=$1 AND status='RUNNING'`, lawyer.id, count)
@@ -70,6 +71,22 @@ func (w Worker) processOnboardingSync(ctx context.Context, onlyUserID string) er
 		return w.failOnboarding(lawyer.id, err)
 	}
 	return nil
+}
+
+// Include both calendar yesterday and the previous business day. On Mondays
+// that also includes Friday, while duplicate dates are queried only once.
+func onboardingDays(today time.Time) []string {
+	dates := map[string]bool{
+		today.Format("2006-01-02"):                   true,
+		today.AddDate(0, 0, -1).Format("2006-01-02"): true,
+		previousBusinessDays(today, 1)[0]:            true,
+	}
+	days := make([]string, 0, len(dates))
+	for day := range dates {
+		days = append(days, day)
+	}
+	sort.Strings(days)
+	return days
 }
 
 func (w Worker) failOnboarding(userID string, cause error) error {

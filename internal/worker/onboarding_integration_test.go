@@ -35,11 +35,12 @@ func TestFirstLoginSyncFetchesTodaysPublicationsIntegration(t *testing.T) {
 	defer db.Exec(`DELETE FROM publications WHERE source_id=$1`, "DJEN:"+sourceID)
 	zone, _ := time.LoadLocation("America/Campo_Grande")
 	today := time.Now().In(zone).Format("2006-01-02")
+	days := onboardingDays(time.Now().In(zone))
 	requests := []string{}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		q := r.URL.Query()
-		if r.URL.Path != "/comunicacao" || q.Get("numeroOab") != suffix || q.Get("ufOab") != "MS" || q.Get("dataDisponibilizacaoInicio") != today || q.Get("dataDisponibilizacaoFim") != today {
-			t.Errorf("unexpected DJEN request: %s (want OAB %s and date %s)", r.URL.String(), suffix, today)
+		if r.URL.Path != "/comunicacao" || q.Get("numeroOab") != suffix || q.Get("ufOab") != "MS" || q.Get("dataDisponibilizacaoInicio") != days[0] || q.Get("dataDisponibilizacaoFim") != today || q.Get("meio") != "D" || q.Get("itensPorPagina") != "100" {
+			t.Errorf("unexpected DJEN request: %s", r.URL.String())
 			w.WriteHeader(http.StatusBadRequest)
 			return
 		}

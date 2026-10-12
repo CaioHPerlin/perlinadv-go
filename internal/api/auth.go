@@ -58,8 +58,8 @@ func (s *Server) register(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id := created.String()
-	// A new lawyer receives yesterday's publications already present in the short buffer.
-	_, _ = s.DB.ExecContext(r.Context(), `INSERT INTO user_publications(user_id,publication_id) SELECT $1,p.id FROM recent_publication_matches m JOIN publications p ON p.source_id=m.source_id WHERE m.oab_uf=$2 AND m.oab_number=$3 AND m.available_on=(now() AT TIME ZONE 'America/Campo_Grande')::date-1 AND m.expires_at>now() AND ($4 OR p.tribunal<>'TRT24') ON CONFLICT DO NOTHING`, id, b.OABUF, b.OABNumber, b.LaborPractice)
+	// Reuse recent matches for today, yesterday, and the previous business day.
+	_, _ = s.DB.ExecContext(r.Context(), `INSERT INTO user_publications(user_id,publication_id,analysis_requested_at) SELECT $1,p.id,now() FROM recent_publication_matches m JOIN publications p ON p.source_id=m.source_id WHERE m.oab_uf=$2 AND m.oab_number=$3 AND m.available_on BETWEEN (now() AT TIME ZONE 'America/Campo_Grande')::date - CASE EXTRACT(ISODOW FROM (now() AT TIME ZONE 'America/Campo_Grande')::date)::int WHEN 1 THEN 3 WHEN 7 THEN 2 ELSE 1 END AND (now() AT TIME ZONE 'America/Campo_Grande')::date AND m.expires_at>now() AND ($4 OR p.tribunal<>'TRT24') ON CONFLICT DO NOTHING`, id, b.OABUF, b.OABNumber, b.LaborPractice)
 	write(w, 201, map[string]string{"id": id})
 }
 

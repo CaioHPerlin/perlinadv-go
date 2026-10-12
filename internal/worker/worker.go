@@ -61,7 +61,12 @@ func New() (Worker, error) {
 		db.Close()
 		return Worker{}, errors.New("DJEN_COLLECTION_MODE must be oab or caderno")
 	}
-	return Worker{DB: db, HTTP: &http.Client{Timeout: 60 * time.Second}, BaseURL: strings.TrimRight(base, "/"), Mode: mode, LLM: extract.CloudflareFromEnv()}, nil
+	var llm extract.Provider
+	cloudflare := extract.CloudflareFromEnv()
+	if cloudflare.AccountID != "" && cloudflare.APIToken != "" {
+		llm = cloudflare
+	}
+	return Worker{DB: db, HTTP: &http.Client{Timeout: 60 * time.Second}, BaseURL: strings.TrimRight(base, "/"), Mode: mode, LLM: llm}, nil
 }
 func (w Worker) Close() { _ = w.DB.Close() }
 func (w Worker) Replay(ctx context.Context, tribunal, date string) error {
@@ -282,7 +287,13 @@ func (w Worker) get(ctx context.Context, target string) (*http.Response, error) 
 		} else {
 			last = err
 		}
+		if attempt == 2 {
+			break
+		}
 		delay := time.Duration(1<<attempt) * time.Second
+		if errors.Is(last, ErrRateLimited) {
+			delay = time.Minute
+		}
 		select {
 		case <-time.After(delay):
 		case <-ctx.Done():
@@ -457,9 +468,15 @@ func (w Worker) saveItem(ctx context.Context, item djenItem, tribunal, version s
 		return e
 	}
 	if oldHash != "" && oldHash != item.Hash {
-		_, _ = w.DB.ExecContext(ctx, `UPDATE user_publications SET analysis_status='PENDING',analysis_attempts=0,llm_assisted=FALSE,analysis_started_at=NULL,analysis_next_attempt_at=NULL WHERE publication_id=$1`, id)
-		_, _ = w.DB.ExecContext(ctx, `UPDATE deadline_suggestions SET status='NEEDS_REVIEW' WHERE publication_id=$1 AND status='PENDING'`, id)
-		_, _ = w.DB.ExecContext(ctx, `UPDATE deadlines SET needs_review=TRUE WHERE publication_id=$1`, id)
+		if _, err := w.DB.ExecContext(ctx, `UPDATE user_publications SET analysis_status='PENDING',analysis_attempts=0,analysis_requested_at=COALESCE(analysis_requested_at,now()),llm_assisted=FALSE,analysis_started_at=NULL,analysis_next_attempt_at=NULL WHERE publication_id=$1`, id); err != nil {
+			return err
+		}
+		if _, err := w.DB.ExecContext(ctx, `UPDATE deadline_suggestions SET status='NEEDS_REVIEW' WHERE publication_id=$1 AND status='PENDING'`, id); err != nil {
+			return err
+		}
+		if _, err := w.DB.ExecContext(ctx, `UPDATE deadlines SET needs_review=TRUE WHERE publication_id=$1`, id); err != nil {
+			return err
+		}
 	}
 	for _, a := range item.Advocates {
 		number, uf := a.Advocate.Number, a.Advocate.UF
@@ -473,11 +490,17 @@ func (w Worker) saveItem(ctx context.Context, item djenItem, tribunal, version s
 			continue
 		}
 		if day, _ := time.Parse("2006-01-02", available); time.Since(day) < 4*24*time.Hour {
-			_, _ = w.DB.ExecContext(ctx, `INSERT INTO recent_publication_matches(source_id,oab_uf,oab_number,available_on,expires_at) VALUES($1,$2,$3,$4,$4::date+interval '4 days') ON CONFLICT(source_id,oab_uf,oab_number) DO UPDATE SET expires_at=excluded.expires_at`, "DJEN:"+source, uf, number, available)
+			if _, err := w.DB.ExecContext(ctx, `INSERT INTO recent_publication_matches(source_id,oab_uf,oab_number,available_on,expires_at) VALUES($1,$2,$3,$4,$4::date+interval '4 days') ON CONFLICT(source_id,oab_uf,oab_number) DO UPDATE SET expires_at=excluded.expires_at`, "DJEN:"+source, uf, number, available); err != nil {
+				return err
+			}
 		}
-		_, _ = w.DB.ExecContext(ctx, `INSERT INTO user_publications(user_id,publication_id) SELECT id,$1 FROM users WHERE oab_number=$2 AND oab_uf=$3 AND active AND llm_consent AND (labor_practice OR $4<>'TRT24') AND $5::date >= (monitoring_started_at AT TIME ZONE 'America/Campo_Grande')::date-1 ON CONFLICT DO NOTHING`, id, number, uf, tribunal, available)
+		if _, err := w.DB.ExecContext(ctx, `INSERT INTO user_publications(user_id,publication_id,analysis_requested_at) SELECT id,$1,now() FROM users WHERE oab_number=$2 AND oab_uf=$3 AND active AND llm_consent AND (labor_practice OR $4<>'TRT24') AND $5::date >= (monitoring_started_at AT TIME ZONE 'America/Campo_Grande')::date - CASE EXTRACT(ISODOW FROM (monitoring_started_at AT TIME ZONE 'America/Campo_Grande')::date)::int WHEN 1 THEN 3 WHEN 7 THEN 2 ELSE 1 END ON CONFLICT DO NOTHING`, id, number, uf, tribunal, available); err != nil {
+			return err
+		}
 	}
-	_, _ = w.DB.ExecContext(ctx, `INSERT INTO case_publications(user_id,case_id,publication_id) SELECT c.user_id,c.id,$1 FROM cases c JOIN user_publications up ON up.user_id=c.user_id AND up.publication_id=$1 WHERE c.case_number=$2 ON CONFLICT DO NOTHING`, id, caseNo)
+	if _, err := w.DB.ExecContext(ctx, `INSERT INTO case_publications(user_id,case_id,publication_id) SELECT c.user_id,c.id,$1 FROM cases c JOIN user_publications up ON up.user_id=c.user_id AND up.publication_id=$1 WHERE c.case_number=$2 ON CONFLICT DO NOTHING`, id, caseNo); err != nil {
+		return err
+	}
 	return nil
 }
 func (w Worker) analyze(ctx context.Context) error {
@@ -536,17 +559,13 @@ func (w Worker) analyzeTask(ctx context.Context, t analysisTask) error {
 	candidates := extract.Rules(t.text)
 	status := "DONE"
 	llmAssisted := false
-	if len(candidates) == 0 && t.consent {
+	if len(candidates) == 0 && t.consent && w.LLM != nil {
 		llmAssisted = true
 		if _, err := w.DB.ExecContext(ctx, `UPDATE user_publications SET llm_assisted=TRUE WHERE user_id=$1 AND publication_id=$2`, t.user, t.pub); err != nil {
 			return err
 		}
 		var err error
-		provider := w.LLM
-		if provider == nil {
-			provider = extract.CloudflareFromEnv()
-		}
-		candidates, err = provider.Extract(ctx, t.text)
+		candidates, err = w.LLM.Extract(ctx, t.text)
 		if err != nil {
 			status = "RETRY"
 		}
